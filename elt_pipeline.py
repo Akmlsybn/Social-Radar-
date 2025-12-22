@@ -3,6 +3,7 @@ import os
 import io
 import shutil
 import json
+import duckdb
 
 # ==============================
 # KONFIGURASI PATH
@@ -154,6 +155,16 @@ def run_elt():
     # -------------------------------------------------
     print("🏆 [GOLD] Features")
 
+    # 👇 INI YANG TADI HILANG: Logic pembuatan df_gold_loc
+    df_gold_loc = (
+        df_loc
+        .groupby(['kategori', 'nama_tempat', 'lat', 'lon'])
+        .size()
+        .reset_index(name='score')
+        .sort_values('score', ascending=False)
+        .head(300)
+    )
+
     df_feat = (
         df_silver
         .groupby('archetype')
@@ -170,19 +181,33 @@ def run_elt():
     # -------------------------------------------------
     print("🏆 [GOLD] Locations")
 
-    df_gold_loc = (
-        df_loc
-        .groupby(['kategori', 'nama_tempat', 'lat', 'lon'])
-        .size()
-        .reset_index(name='score')
-        .sort_values('score', ascending=False)
-        .head(300)   # ⬅️ jangan kecil
-    )
-
     df_gold_loc.to_parquet(os.path.join(LAKE_GOLD, 'gold_locations.parquet'), index=False)
     print("✅ gold_locations.parquet")
 
-    print("🎉 ELT SELESAI – DATA SIAP DIPAKAI APP")
+    # ========================================================
+    # [BARU] 7. PUBLISH KE SQL DATA WAREHOUSE (DUCKDB)
+    # ========================================================
+    print("💾 [SQL] Memuat data ke DuckDB (Serving Layer)...")
+    
+    # Nama file database (akan muncul di folder project)
+    db_path = os.path.join(BASE_DIR, 'social_radar_olap.duckdb')
+    
+    # Koneksi (akan membuat file jika belum ada)
+    con = duckdb.connect(db_path)
+    
+    # LOAD: Masukkan DataFrame Gold ke tabel SQL
+    # 'CREATE OR REPLACE' penting agar pipeline bisa dijalankan berulang kali tanpa error
+    # Pastikan variabel df_feat dan df_gold_loc masih dikenali di sini (mereka ada di dalam fungsi run_elt yang sama)
+    con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM df_feat")
+    con.execute("CREATE OR REPLACE TABLE locations AS SELECT * FROM df_gold_loc")
+    
+    # Verifikasi sederhana
+    row_count = con.execute("SELECT COUNT(*) FROM locations").fetchone()[0]
+    print(f"✅ Database SQL Updated. Total Locations: {row_count}")
+    
+    con.close()
+
+    print("🎉 ELT SELESAI – DATA SIAP DI-QUERY VIA SQL")
 
 # ==============================
 if __name__ == "__main__":

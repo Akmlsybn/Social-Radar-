@@ -5,6 +5,7 @@ import pytz
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import duckdb
 
 # ==========================================
 # 1. KONFIGURASI DASAR
@@ -40,15 +41,28 @@ KOTA = "Banjarmasin"
 # ==========================================
 # 2. LOAD GOLD LAYER (SINGLE SOURCE OF TRUTH)
 # ==========================================
-GOLD_FEATURES = "datalake/gold/gold_features.parquet"
-GOLD_LOCATIONS = "datalake/gold/gold_locations.parquet"
+DB_PATH = "social_radar_olap.duckdb" # File yang dihasilkan pipeline
 
-if not os.path.exists(GOLD_FEATURES) or not os.path.exists(GOLD_LOCATIONS):
-    st.error("Gold Layer belum tersedia. Jalankan elt_pipeline.py terlebih dahulu.")
+if not os.path.exists(DB_PATH):
+    st.error("⚠️ Database SQL tidak ditemukan. Harap jalankan 'elt_pipeline.py' terlebih dahulu!")
     st.stop()
 
-df_features = pd.read_parquet(GOLD_FEATURES)
-df_locations = pd.read_parquet(GOLD_LOCATIONS)
+# Fungsi untuk query data (biar rapi dan reusable)
+def query_db(query):
+    # read_only=True agar aman saat diakses aplikasi concurrent
+    con = duckdb.connect(DB_PATH, read_only=True) 
+    df = con.execute(query).df()
+    con.close()
+    return df
+
+# Ambil data awal untuk UI (Dropdown Archetype)
+# Kita pakai SQL Select sederhana
+try:
+    df_features = query_db("SELECT * FROM features ORDER BY jumlah DESC")
+    # Kita load lokasi nanti saja saat butuh (Lazy Loading) - lebih efisien!
+except Exception as e:
+    st.error(f"Gagal koneksi database: {e}")
+    st.stop()
 
 # ==========================================
 # 3. FUNGSI PENDUKUNG
@@ -76,8 +90,10 @@ def get_time_context():
         return "Malam Nongkrong"
 
 def cari_target(selected_arch):
-    row_feat = df_features[df_features['archetype'] == selected_arch]
-    skor = int(row_feat.iloc[0]['jumlah']) if not row_feat.empty else 0
+    # 1. Ambil skor archetype dari tabel features via SQL
+    # f-string di SQL aman di sini karena input selected_arch dari selectbox terkontrol
+    df_skor = query_db(f"SELECT jumlah FROM features WHERE archetype = '{selected_arch}'")
+    skor = int(df_skor.iloc[0]['jumlah']) if not df_skor.empty else 0
 
     kategori_map = {
     'Religius': [
@@ -120,29 +136,40 @@ def cari_target(selected_arch):
         'fitness_centre',
         'outdoor'
     ],
-    'General': df_locations['kategori'].unique().tolist()
+    'General': []
 }
 
     allowed_kat = kategori_map.get(selected_arch, [])
 
-    df_loc_filt = df_locations[df_locations['kategori'].isin(allowed_kat)]
+# 3. FILTER LOKASI MENGGUNAKAN SQL (REFACTOR UTAMA)
+    if not allowed_kat:
+        # Fallback: Cari string yang mirip (SQL ILIKE adalah case-insensitive LIKE)
+        sql_query = f"""
+            SELECT * FROM locations 
+            WHERE kategori ILIKE '%{selected_arch}%'
+            ORDER BY score DESC
+        """
+    else:
+        # Format list python ke format list SQL: ('cafe', 'mall')
+        kat_tuple = str(tuple(allowed_kat)).replace(",)", ")") # Handle tuple 1 elemen
+        
+        sql_query = f"""
+            SELECT * FROM locations 
+            WHERE kategori IN {kat_tuple}
+            ORDER BY score DESC
+        """
 
-# fallback TERKONTROL (masih masuk akal secara akademik)
-    if df_loc_filt.empty:
-        df_loc_filt = df_locations[df_locations['kategori'].str.contains(
-        selected_arch.lower(), case=False, na=False
-    )]
+    df_loc_filt = query_db(sql_query)
 
     if df_loc_filt.empty:
         return None
 
-    # 🎯 AMBIL YANG PALING RELEVAN
+    # 🎯 AMBIL SAMPLE (Bisa pakai Pandas di sini karena data sudah terfilter)
     loc = df_loc_filt.sample(
         n=1,
         weights=df_loc_filt['score'],
         random_state=None
     ).iloc[0]
-
 
     return {
         "Profil": f"Tipe {selected_arch}",
