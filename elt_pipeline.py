@@ -201,9 +201,14 @@ def run_elt():
     con.execute("CREATE OR REPLACE TABLE features AS SELECT * FROM df_feat")
     con.execute("CREATE OR REPLACE TABLE locations AS SELECT * FROM df_gold_loc")
     
+    rules_parquet = os.path.join(LAKE_SILVER, 'rules_data.parquet')
+    con.execute(f"CREATE OR REPLACE TABLE rules AS SELECT * FROM '{rules_parquet}'")
+
     # Verifikasi sederhana
     row_count = con.execute("SELECT COUNT(*) FROM locations").fetchone()[0]
-    print(f"✅ Database SQL Updated. Total Locations: {row_count}")
+    rule_count = con.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+    print(f"✅ Database SQL Updated. Locs: {row_count}, Rules: {rule_count}")
+
     
     con.close()
 

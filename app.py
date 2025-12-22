@@ -3,9 +3,9 @@ import pandas as pd
 import requests
 import pytz
 import os
+import duckdb
 from datetime import datetime
 from dotenv import load_dotenv
-import duckdb
 
 # ==========================================
 # 1. KONFIGURASI DASAR
@@ -39,33 +39,37 @@ if not API_KEY_CUACA:
 KOTA = "Banjarmasin"
 
 # ==========================================
-# 2. LOAD GOLD LAYER (SINGLE SOURCE OF TRUTH)
+# 2. KONEKSI KE DATA WAREHOUSE (DUCKDB)
 # ==========================================
-DB_PATH = "social_radar_olap.duckdb" # File yang dihasilkan pipeline
+# Pastikan file ini ada (hasil run elt_pipeline.py)
+DB_PATH = "social_radar_olap.duckdb"
 
 if not os.path.exists(DB_PATH):
     st.error("⚠️ Database SQL tidak ditemukan. Harap jalankan 'elt_pipeline.py' terlebih dahulu!")
     st.stop()
 
-# Fungsi untuk query data (biar rapi dan reusable)
+# Fungsi helper untuk menjalankan Query SQL
 def query_db(query):
-    # read_only=True agar aman saat diakses aplikasi concurrent
-    con = duckdb.connect(DB_PATH, read_only=True) 
+    # read_only=True agar aman saat diakses
+    con = duckdb.connect(DB_PATH, read_only=True)
     df = con.execute(query).df()
     con.close()
     return df
 
-# Ambil data awal untuk UI (Dropdown Archetype)
-# Kita pakai SQL Select sederhana
+# Load Opsi Archetype untuk Sidebar
 try:
+    # Kita ambil daftar archetype yang tersedia
     df_features = query_db("SELECT * FROM features ORDER BY jumlah DESC")
-    # Kita load lokasi nanti saja saat butuh (Lazy Loading) - lebih efisien!
+    opsi_archetype = df_features['archetype'].tolist()
+    # Tambahkan opsi manual "General" jika belum ada
+    if "General" not in opsi_archetype:
+        opsi_archetype.append("General")
 except Exception as e:
     st.error(f"Gagal koneksi database: {e}")
     st.stop()
 
 # ==========================================
-# 3. FUNGSI PENDUKUNG
+# 3. FUNGSI LOGIKA UTAMA
 # ==========================================
 def get_cuaca():
     try:
@@ -76,83 +80,77 @@ def get_cuaca():
         return "Unknown", "Offline", 30
 
 def get_time_context():
-    tz = pytz.timezone("Asia/Makassar")
-    now = datetime.now(tz)
-    hour = now.hour
+    try:
+        # 1. Setup Waktu (WITA)
+        tz = pytz.timezone("Asia/Makassar")
+        now = datetime.now(tz)
+        current_hour = now.hour         # Format Int (misal: 14)
+        current_day_int = now.weekday() # Format Int 0-6 (0=Senin)
 
-    if 6 <= hour < 10:
-        return "Pagi Aktif"
-    elif 10 <= hour < 15:
-        return "Siang Santai"
-    elif 15 <= hour < 18:
-        return "Sore Sosial"
-    else:
-        return "Malam Nongkrong"
+        # 2. Mapping Hari Python ke CSV
+        days_map = {
+            0: 'Senin', 1: 'Selasa', 2: 'Rabu', 3: 'Kamis',
+            4: 'Jumat', 5: 'Sabtu', 6: 'Minggu'
+        }
+        current_day_str = days_map.get(current_day_int, 'Senin')
+
+        # 3. Query Cerdas ke DuckDB (Cek Tabel Rules)
+        query = f"""
+            SELECT phase_name 
+            FROM rules 
+            WHERE day_category = '{current_day_str}'
+              AND {current_hour} >= start_hour 
+              AND {current_hour} < end_hour
+        """
+        
+        df_rule = query_db(query)
+
+        if not df_rule.empty:
+            phase = df_rule.iloc[0]['phase_name']
+            return f"{current_day_str} - {phase}"
+        else:
+            return f"{current_day_str} (Santai)"
+
+    except Exception as e:
+        return "Mode Offline"
 
 def cari_target(selected_arch):
-    # 1. Ambil skor archetype dari tabel features via SQL
-    # f-string di SQL aman di sini karena input selected_arch dari selectbox terkontrol
-    df_skor = query_db(f"SELECT jumlah FROM features WHERE archetype = '{selected_arch}'")
-    skor = int(df_skor.iloc[0]['jumlah']) if not df_skor.empty else 0
+    # 1. Ambil Skor Archetype (jika ada)
+    if selected_arch == "General":
+        skor = 0
+    else:
+        df_skor = query_db(f"SELECT jumlah FROM features WHERE archetype = '{selected_arch}'")
+        skor = int(df_skor.iloc[0]['jumlah']) if not df_skor.empty else 0
 
+    # 2. Mapping Kategori ke Tempat
     kategori_map = {
-    'Religius': [
-        'place_of_worship',
-        'mosque',
-        'religious_school'
-    ],
-    'Intellectual': [
-        'university',
-        'college',
-        'school',
-        'library',
-        'books'
-    ],
-    'Creative': [
-        'arts_centre',
-        'gallery',
-        'cafe'
-    ],
-    'Social': [
-        'cafe',
-        'restaurant',
-        'mall',
-        'community_centre'
-    ],
-    'Sporty': [
-        'gym',
-        'fitness_centre',
-        'park',
-        'stadium'
-    ],
-    'Techie': [
-        'electronics',
-        'computer',
-        'coworking'
-    ],
-    'Active': [
-        'park',
-        'gym',
-        'fitness_centre',
-        'outdoor'
-    ],
-    'General': []
-}
+        'Religius': ['place_of_worship', 'mosque', 'religious_school'],
+        'Intellectual': ['university', 'college', 'school', 'library', 'books'],
+        'Creative': ['arts_centre', 'gallery', 'cafe'],
+        'Social': ['cafe', 'restaurant', 'mall', 'community_centre'],
+        'Sporty': ['gym', 'fitness_centre', 'park', 'stadium'],
+        'Techie': ['electronics', 'computer', 'coworking'],
+        'Active': ['park', 'gym', 'fitness_centre', 'outdoor'],
+        'General': [] # Kosongkan, nanti dihandle SQL khusus
+    }
 
     allowed_kat = kategori_map.get(selected_arch, [])
 
-# 3. FILTER LOKASI MENGGUNAKAN SQL (REFACTOR UTAMA)
-    if not allowed_kat:
-        # Fallback: Cari string yang mirip (SQL ILIKE adalah case-insensitive LIKE)
+    # 3. FILTER LOKASI MENGGUNAKAN SQL
+    if selected_arch == 'General':
+        # Ambil Top 100 Lokasi apapun kategorinya
+        sql_query = "SELECT * FROM locations ORDER BY score DESC LIMIT 100"
+    
+    elif not allowed_kat:
+        # Fallback: Cari nama kategori mirip string
         sql_query = f"""
             SELECT * FROM locations 
             WHERE kategori ILIKE '%{selected_arch}%'
             ORDER BY score DESC
         """
     else:
-        # Format list python ke format list SQL: ('cafe', 'mall')
-        kat_tuple = str(tuple(allowed_kat)).replace(",)", ")") # Handle tuple 1 elemen
-        
+        # Filter IN (...)
+        kat_tuple = str(tuple(allowed_kat)).replace(",)", ")")
         sql_query = f"""
             SELECT * FROM locations 
             WHERE kategori IN {kat_tuple}
@@ -164,7 +162,8 @@ def cari_target(selected_arch):
     if df_loc_filt.empty:
         return None
 
-    # 🎯 AMBIL SAMPLE (Bisa pakai Pandas di sini karena data sudah terfilter)
+    # 🎯 AMBIL 1 SAMPLE (Weighted Random)
+    # Lokasi dengan skor tinggi punya peluang lebih besar muncul
     loc = df_loc_filt.sample(
         n=1,
         weights=df_loc_filt['score'],
@@ -179,7 +178,6 @@ def cari_target(selected_arch):
         "Lon": loc['lon']
     }
 
-
 # ==========================================
 # 4. SIDEBAR
 # ==========================================
@@ -187,61 +185,61 @@ with st.sidebar:
     st.title("🎛️ Control Panel")
     st.markdown("---")
 
-    opsi = df_features['archetype'].tolist()
-    selected_arch = st.selectbox("Pilih Archetype:", opsi)
+    # Dropdown mengambil data dari DuckDB
+    selected_arch = st.selectbox("Pilih Archetype:", opsi_archetype)
 
     st.markdown("---")
     btn_scan = st.button("📡 SCAN TARGET", use_container_width=True, type="primary")
 
 # ==========================================
-# 5. DASHBOARD
+# 5. DASHBOARD UTAMA
 # ==========================================
 st.title("📡 Social Radar: Banjarmasin Intelligence")
-st.markdown("Sistem pendukung keputusan berbasis **Data Lakehouse (Medallion Architecture)**")
+st.markdown("Sistem pendukung keputusan berbasis **Data Lakehouse (DuckDB SQL)**")
 st.divider()
 
+# Ambil Data Real-time
 cuaca_main, cuaca_desc, suhu = get_cuaca()
 fase_waktu = get_time_context()
 
 if not btn_scan:
     c1, c2, c3 = st.columns(3)
     c1.metric("🌤️ Cuaca", f"{suhu}°C", cuaca_desc.title())
-    c2.metric("🕒 Fase Waktu", fase_waktu)
+    c2.metric("🕒 Fase Waktu", fase_waktu) # <-- INI AKAN BERUBAH SESUAI JAM & HARI
     c3.metric("📍 Kota", KOTA)
     st.info("👈 Pilih archetype lalu klik SCAN TARGET.")
 else:
-    # 1️⃣ Ambil hasil
+    # 1️⃣ Ambil hasil rekomendasi
     res = cari_target(selected_arch)
 
-    # 2️⃣ WAJIB cek None DI SINI
+    # 2️⃣ Cek Validasi
     if res is None:
-        st.error("❌ Tidak ditemukan lokasi yang sesuai dengan archetype ini.")
+        st.error("❌ Tidak ditemukan lokasi yang sesuai dengan kriteria ini.")
         st.stop()
 
-    # 3️⃣ Baru logic preskriptif
+    # 3️⃣ Logic Prescriptive (Strategi)
     if "Rain" in cuaca_main:
         strategi = "Hindari area terbuka, pilih lokasi indoor."
-    elif "Clear" in cuaca_main:
-        strategi = "Cuaca cerah, cocok untuk aktivitas sosial."
+    elif "Clear" in cuaca_main or "Clouds" in cuaca_main:
+        strategi = "Cuaca mendukung untuk aktivitas sosial."
     else:
         strategi = "Cuaca relatif aman."
 
-    # 4️⃣ Tampilkan hasil
-    c1, c2, c3, c4 = st.columns(4)
+    # 4️⃣ Tampilkan Hasil
+    c1, c2, c3,= st.columns(3)
     c1.metric("Target", res["Profil"])
-    c2.metric("Akurasi", f"{res['Skor']} poin")
-    c3.metric("Cuaca", cuaca_main)
-    c4.metric("Waktu", fase_waktu)
+    c2.metric("Cuaca", cuaca_main)
+    c3.metric("Waktu", fase_waktu)
 
     st.markdown(f"""
     <div class="rec-card">
         <h2>REKOMENDASI: {res["Lokasi"].upper()}</h2>
         <p><strong>Strategi:</strong> {strategi}</p>
-        <p><strong>Alasan:</strong> Sesuai archetype <b>{selected_arch}</b> dan konteks waktu/cuaca.</p>
+        <p><strong>Alasan:</strong> Sesuai archetype <b>{selected_arch}</b> dan fase waktu <b>{fase_waktu}</b>.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    st.subheader("📍 Lokasi Rekomendasi")
+    st.subheader("📍 Peta Lokasi")
     st.map(pd.DataFrame({
         "lat": [res["Lat"]],
         "lon": [res["Lon"]]
