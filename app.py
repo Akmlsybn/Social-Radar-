@@ -267,11 +267,10 @@ try:
             for index, row in alternatives.iterrows():
                 # Tampilkan sebagai expander (bisa diklik untuk buka detail)
                 with st.expander(f"📍 {row['nama_tempat']} ({row['kategori']})"):
-                    st.write(f"**Skor Popularitas:** {row['score']}")
                     
                     # Link Maps Kecil
-                    alt_url = f"http://googleusercontent.com/maps.google.com/?q={row['lat']},{row['lon']}"
-                    st.markdown(f"[🗺️ Buka di Google Maps]({alt_url})")
+                    alt_url = f"https://www.google.com/maps?q={row['lat']},{row['lon']}"
+                    st.markdown(f"[📍 Buka di Google Maps]({alt_url})")
 
     else:
         st.warning(f"Sedang memproses data untuk **{selected_arch}**...")
