@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # 1. SCHEDULER (Backend: Update Data & Cuaca)
+  scheduler:
+    build: .
+    container_name: social_radar_scheduler
+    command: python scheduler.py
+    volumes:
+      - ./datalake:/app/datalake  # <--- INI KUNCINYA (Folder Sharing)
+    env_file:
+      - .env
+    restart: always
+
+  # 2. APP (Frontend: Menampilkan Data)
+  dashboard:
+    build: .
+    container_name: social_radar_app
+    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+    volumes:
+      - ./datalake:/app/datalake  # <--- HARUS SAMA DENGAN ATAS
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    depends_on:
+      - scheduler
+    restart: always
