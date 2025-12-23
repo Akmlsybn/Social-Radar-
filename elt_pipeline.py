@@ -206,7 +206,7 @@ def run_elt_pipeline():
                 (t1.archetype = 'Active'           AND t2.kategori IN ('park', 'playground', 'recreation_ground'))
         )
         -- Ambil HANYA Juara 1 untuk setiap tipe
-        SELECT * FROM Ranked WHERE rank_urutan = 1
+        SELECT * FROM Ranked WHERE rank_urutan <= 10
     """)
 
     # 4. VERIFIKASI & TUTUP

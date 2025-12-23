@@ -198,26 +198,18 @@ if "Rain" in cuaca_main:
 else:
     c3.metric("💈 Pilih Area", "OUTDOOR MODE", "Aman", delta_color="normal")
 
-st.markdown("---")
-
-# --- BAGIAN B: HASIL (THE BEST PRACTICE WAY) ---
+# --- BAGIAN B: HASIL (HERO CARD + LIST) ---
 try:
     con = duckdb.connect(DB_PATH, read_only=True)
     
-    # =========================================================================
-    # PERUBAHAN UTAMA: LOGIKA DIPINDAHKAN KE DALAM QUERY SQL (DATA LAYER)
-    # =========================================================================
-    # Aplikasi kirim parameter cuaca, Database yang menentukan strategi.
-    
+    # REVISI PENTING: Ubah LIMIT 1 menjadi LIMIT 5
+    # Agar kita punya 1 data utama + 4 data cadangan
     query = f"""
         SELECT 
             *,
             CASE 
-                -- Logika Hujan: Jika cuaca hujan DAN kategori bukan indoor safe
                 WHEN '{cuaca_main}' LIKE '%Rain%' AND kategori NOT IN ('mall', 'cafe', 'library', 'museum') 
-                THEN '**Strategi 💘:** Cuaca hujan, lokasi ini mungkin outdoor. Pertimbangkan membawa payung atau pergi ke indoor.'
-                
-                -- Logika Cerah
+                THEN '**Strategi 💘:** Cuaca hujan, lokasi ini mungkin outdoor. Bawa payung atau pilih alternatif indoor di bawah.'
                 ELSE '**Strategi 💘:** Kondisi cuaca mendukung. Segera meluncur ke lokasi sebelum terlambat.'
             END as pesan_strategi,
             
@@ -230,41 +222,60 @@ try:
         FROM gold_daily_recommendations 
         WHERE archetype = '{selected_arch}'
         ORDER BY random() 
-        LIMIT 1
+        LIMIT 5
     """
     
     result = con.execute(query).df()
     con.close()
     
     if not result.empty:
-        data = result.iloc[0]
-        
-        # --- APLIKASI SEKARANG BENAR-BENAR BODOH ---
-        # Dia hanya mengambil string dari kolom 'pesan_strategi' yang dibuat SQL.
+        # === 1. HERO SECTION (KARTU UTAMA) ===
+        # Ambil data pertama (Index 0) sebagai rekomendasi utama
+        hero = result.iloc[0]
         
         st.markdown(f"""
-        <div class="rec-card" style="border-left: 6px solid {data['warna_border']};">
-            <h3>💈 {data['nama_tempat']}</h3>
+        <div class="rec-card" style="border-left: 6px solid {hero['warna_border']};">
+            <h3>💈 Pilihan Utama: {hero['nama_tempat']}</h3>
             <div style="margin-bottom: 15px;">
-                <span class="badge-cat">📍 {data['kategori']}</span>
+                <span class="badge-cat">📍 {hero['kategori']}</span>
                 <span class="badge-top">📌 Rekomendasi Teratas</span>
             </div>
             <hr style="margin: 10px 0;">
-            <p style="font-size: 1.05em; line-height: 1.5;">{data['pesan_strategi']}</p>
+            <p style="font-size: 1.05em; line-height: 1.5;">{hero['pesan_strategi']}</p>
         </div>
         """, unsafe_allow_html=True)
         
-        # Peta
+        # Peta & Tombol (Khusus Hero)
         c_map, c_btn = st.columns([3, 1])
         with c_map:
-            st.map(pd.DataFrame({'lat': [data['lat']], 'lon': [data['lon']]}))
+            st.map(pd.DataFrame({'lat': [hero['lat']], 'lon': [hero['lon']]}))
         with c_btn:
             st.write("") 
             st.write("") 
-            gmaps_url = f"https://www.google.com/maps?q={data['lat']},{data['lon']}"            
+            gmaps_url = f"https://www.google.com/maps?q={hero['lat']},{hero['lon']}"            
             st.link_button("🚀 Buka Maps", gmaps_url, use_container_width=True)
+
+        # === 2. LIST SECTION (OPSI CADANGAN) ===
+        # Ambil sisa data (Index 1 sampai habis)
+        alternatives = result.iloc[1:]
+        
+        if not alternatives.empty:
+            st.markdown("---")
+            st.subheader("💁‍♀️ Opsi Menarik Lainnya")
+            st.caption("Kurang sreg dengan pilihan di atas? Coba cek tempat ini:")
+            
+            for index, row in alternatives.iterrows():
+                # Tampilkan sebagai expander (bisa diklik untuk buka detail)
+                with st.expander(f"📍 {row['nama_tempat']} ({row['kategori']})"):
+                    st.write(f"**Skor Popularitas:** {row['score']}")
+                    
+                    # Link Maps Kecil
+                    alt_url = f"http://googleusercontent.com/maps.google.com/?q={row['lat']},{row['lon']}"
+                    st.markdown(f"[🗺️ Buka di Google Maps]({alt_url})")
+
     else:
         st.warning(f"Sedang memproses data untuk **{selected_arch}**...")
+        st.caption("Scheduler sedang menyiapkan data terbaru.")
 
 except Exception as e:
     st.error(f"Error Database: {e}")
