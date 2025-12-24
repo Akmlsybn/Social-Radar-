@@ -215,22 +215,64 @@ def run_elt_pipeline():
     con.execute("CREATE OR REPLACE TABLE gold_locations AS SELECT * FROM df_gold_loc")
     con.execute(f"CREATE OR REPLACE TABLE gold_rules AS SELECT * FROM '{os.path.join(LAKE_SILVER, 'rules_data.parquet')}'")
 
+    # --------------------------------------------------------
+    # LANGKAH KUNCI 1: AMBIL FILTER WAKTU DARI RULES
+    # --------------------------------------------------------
     allowed_cats = get_allowed_categories_by_time(con)
     
+    # Siapkan string SQL untuk filter waktu
+    time_filter_sql = ""
     if allowed_cats:
         allowed_sql_str = ", ".join([f"'{x}'" for x in allowed_cats])
         time_filter_sql = f"AND t2.kategori IN ({allowed_sql_str})"
         print("🔒 Mode Filter Aktif.")
     else:
-        time_filter_sql = "AND 1=0" 
+        time_filter_sql = "AND 1=0"
         print("🔒 STRICT MODE: Block all.")
 
+    # --------------------------------------------------------
+    # LOGIKA 2: INJEKSI KONTEKS CUACA (PERFECTIONIST MODE)
+    # --------------------------------------------------------
+    # Pipeline membaca cuaca sekarang agar App tidak perlu mikir nanti
+    cuaca_main = "Clear" # Default
+    try:
+        # Cek apakah tabel cuaca ada dan ada isinya
+        res = con.execute("SELECT main FROM context_weather LIMIT 1").fetchone()
+        if res:
+            cuaca_main = res[0]
+            print(f"🌦️ Weather Context Detected: {cuaca_main}")
+        else:
+            print("⚠️ Weather Table Empty, using default: Clear")
+    except:
+        print("⚠️ Weather Table Not Found, using default: Clear")
+
+    # Daftar tempat indoor (aman saat hujan)
+    indoor_cats = "'mall', 'cafe', 'library', 'museum', 'book_store', 'restaurant', 'fast_food', 'food_court', 'shop', 'electronics', 'clothes', 'gym', 'mosque', 'place_of_worship'"
+
+    # --------------------------------------------------------
+    # QUERY FINAL (Updated dengan Kolom Strategi)
+    # --------------------------------------------------------
     query = f"""
         CREATE OR REPLACE TABLE gold_daily_recommendations AS
         WITH Ranked AS (
             SELECT 
                 t1.archetype, 
                 t2.nama_tempat, t2.lat, t2.lon, t2.kategori, t2.score,
+                
+                -- LOGIKA STRATEGI (Dipindah dari App ke Sini)
+                CASE 
+                    WHEN '{cuaca_main}' LIKE '%Rain%' AND t2.kategori NOT IN ({indoor_cats}) 
+                    THEN '**Strategi 💘:** Cuaca hujan & lokasi outdoor. Bawa payung atau cari opsi indoor lain.'
+                    ELSE '**Strategi 💘:** Cuaca mendukung. Segera meluncur ke lokasi!'
+                END as pesan_strategi,
+                
+                -- LOGIKA WARNA (Dipindah dari App ke Sini)
+                CASE 
+                    WHEN '{cuaca_main}' LIKE '%Rain%' AND t2.kategori NOT IN ({indoor_cats}) 
+                    THEN '#9d174d'  -- Merah Gelap (Warning)
+                    ELSE '#f9a8d4'  -- Pink (Aman)
+                END as warna_border,
+
                 ROW_NUMBER() OVER (PARTITION BY t1.archetype ORDER BY t2.score DESC, random()) as rank_urutan
             FROM gold_features t1
             JOIN gold_locations t2 ON 
@@ -248,10 +290,11 @@ def run_elt_pipeline():
         )
         SELECT * FROM Ranked WHERE rank_urutan <= 10
     """
+    
     con.execute(query)
     count = con.execute("SELECT COUNT(*) FROM gold_daily_recommendations").fetchone()[0]
     con.close()
-    print(f"✅ ELT Selesai! {count} rekomendasi valid tersimpan.")
+    print(f"✅ ELT Selesai! {count} rekomendasi siap saji tersimpan.")
 
 if __name__ == "__main__":
     run_elt_pipeline()

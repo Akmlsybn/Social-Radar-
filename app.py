@@ -202,23 +202,10 @@ else:
 try:
     con = duckdb.connect(DB_PATH, read_only=True)
     
-    # REVISI PENTING: Ubah LIMIT 1 menjadi LIMIT 5
-    # Agar kita punya 1 data utama + 4 data cadangan
+    # PERHATIKAN: Query jadi sangat simpel!
+    # Tidak ada lagi CASE WHEN di sini. Semua sudah "Siap Saji".
     query = f"""
-        SELECT 
-            *,
-            CASE 
-                WHEN '{cuaca_main}' LIKE '%Rain%' AND kategori NOT IN ('mall', 'cafe', 'library', 'museum') 
-                THEN '**Strategi 💘:** Cuaca hujan, lokasi ini mungkin outdoor. Bawa payung atau pilih alternatif indoor di bawah.'
-                ELSE '**Strategi 💘:** Kondisi cuaca mendukung. Segera meluncur ke lokasi sebelum terlambat.'
-            END as pesan_strategi,
-            
-            CASE 
-                WHEN '{cuaca_main}' LIKE '%Rain%' AND kategori NOT IN ('mall', 'cafe', 'library', 'museum') 
-                THEN '#9d174d'  
-                ELSE '#f9a8d4' 
-            END as warna_border
-            
+        SELECT *
         FROM gold_daily_recommendations 
         WHERE archetype = '{selected_arch}'
         ORDER BY random() 
@@ -229,10 +216,10 @@ try:
     con.close()
     
     if not result.empty:
-        # === 1. HERO SECTION (KARTU UTAMA) ===
-        # Ambil data pertama (Index 0) sebagai rekomendasi utama
+        # === 1. HERO SECTION ===
         hero = result.iloc[0]
         
+        # Langsung pakai kolom 'warna_border' dan 'pesan_strategi' dari database
         st.markdown(f"""
         <div class="rec-card" style="border-left: 6px solid {hero['warna_border']};">
             <h3>💈 Pilihan Utama: {hero['nama_tempat']}</h3>
