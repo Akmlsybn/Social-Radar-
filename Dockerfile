@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy seluruh file proyek ke dalam container
 COPY . .
 
+RUN python init_db.py
+
 # Buat folder datalake (jika belum ada)
 RUN mkdir -p datalake/bronze datalake/silver datalake/gold
 

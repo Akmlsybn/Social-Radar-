@@ -3,6 +3,7 @@ import os
 import io
 import shutil
 import requests
+import sqlite3
 import json
 import duckdb
 from datetime import datetime
@@ -261,28 +262,34 @@ def run_elt_pipeline():
 
     # 4.5. TRANSFORM HOLIDAYS (NoSQL Source)
     print("⚙️ [SILVER] Holidays (NoSQL)...")
-    holiday_path = os.path.join(BASE_DIR, 'holidays.json') # Ambil dari root folder
+    db_source_path = os.path.join(BASE_DIR, 'holidays.db') # Ambil dari root folder
     
-    if os.path.exists(holiday_path):
+    if os.path.exists(db_source_path):
         try:
-            # Baca sebagai JSON murni
-            with open(holiday_path, 'r') as f:
-                holiday_data = json.load(f)
+            # A. Extract dari SQL Database (Bukan JSON lagi)
+            # Koneksi ke Database SQLite
+            con_sql = sqlite3.connect(db_source_path)
             
-            # Convert ke DataFrame
-            df_holidays = pd.DataFrame(holiday_data)
+            # Query SQL standard
+            query_sql = "SELECT date, name FROM holidays"
             
-            # Pastikan format tanggal konsisten
+            # Baca langsung ke Pandas DataFrame
+            df_holidays = pd.read_sql_query(query_sql, con_sql)
+            
+            # Tutup koneksi
+            con_sql.close()
+            
+            # B. Transform (Pastikan format tanggal)
             df_holidays['date'] = pd.to_datetime(df_holidays['date']).dt.date
             
-            # Simpan ke Silver (Parquet)
+            # C. Load ke Silver
             df_holidays.to_parquet(os.path.join(LAKE_SILVER, 'holidays.parquet'), index=False)
-            print(f"   -> Holidays loaded: {len(df_holidays)} events found.")
+            print(f"   -> Holidays loaded from SQL DB: {len(df_holidays)} events found.")
             
         except Exception as e:
-            print(f"⚠️ Gagal memproses Holidays: {e}")
+            print(f"⚠️ Gagal memproses Holidays dari SQL: {e}")
     else:
-        print("⚠️ File holidays.json tidak ditemukan.")
+        print(f"⚠️ File database '{db_source_path}' tidak ditemukan. Jalankan init_db.py dulu!")
 
     # 5. AGGREGATION (REVISI: FORCE ALL ARCHETYPES)
     print("🏆 [GOLD] Aggregating & Strategy Planning...")
