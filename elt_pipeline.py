@@ -177,14 +177,42 @@ def run_elt_pipeline():
     print("🚀 MEMULAI ELT PIPELINE")
 
     # 1. EXTRACT
-    # A. Copy CSV Manual (Survey & Rules)
-    raw_files = ['hasil_survey.csv', 'social_time_rules.csv']
-    for f in raw_files:
-        src = os.path.join(RAW_SOURCE, f)
-        dst = os.path.join(LAKE_BRONZE, f)
-        if os.path.exists(src): 
-            shutil.copy(src, dst)
-            # B. Tarik API Lokasi (AUTO DOWNLOAD)
+    print("📥 [BRONZE] Extracting Data...")
+
+    # --- A. AMBIL DATA DARI GOOGLE SHEETS (SURVEY) ---
+    # ⚠️ PASTIKAN ANDA MENEMPELKAN LINK CSV ANDA DI BAWAH INI
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQn2iBR8DjQEgmZeA4ieEFLr1876iA5fi0F1p5hcNqYNuYEa9Qe6YlUoYRLPubzJ0D1jyD1P8on29jY/pub?output=csv" 
+    
+    survey_tgt = os.path.join(LAKE_BRONZE, 'hasil_survey.csv')
+
+    try:
+        print("   -> Mengunduh Survey dari Google Sheets...")
+        response = requests.get(SHEET_URL, timeout=10)
+        response.raise_for_status()
+        
+        with open(survey_tgt, 'wb') as f:
+            f.write(response.content)
+        print("   -> Survey: SUKSES Terunduh (Live Data) ✅")
+        
+    except Exception as e:
+        print(f"   ❌ Gagal download Survey: {e}")
+        # Fallback: Pakai file lokal jika internet mati
+        local_backup = os.path.join(RAW_SOURCE, 'hasil_survey.csv')
+        if os.path.exists(local_backup):
+            shutil.copy(local_backup, survey_tgt)
+            print("   ⚠️ Menggunakan File Lokal sebagai cadangan.")
+
+    # --- B. COPY RULES (Tetap File Lokal) ---
+    # Rules jarang berubah, jadi tetap copy dari lokal saja
+    rules_file = 'social_time_rules.csv'
+    src_rules = os.path.join(RAW_SOURCE, rules_file)
+    dst_rules = os.path.join(LAKE_BRONZE, rules_file)
+    
+    if os.path.exists(src_rules):
+        shutil.copy(src_rules, dst_rules)
+        print("   -> Rules: Loaded from Local CSV ✅")
+
+    # C. Tarik API Lokasi (AUTO DOWNLOAD)
     json_data = extract_lokasi_api() # Panggil fungsi API
     
     tgt_path = os.path.join(LAKE_BRONZE, 'lokasi_bjm.json')
