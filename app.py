@@ -4,9 +4,6 @@ import pandas as pd
 import os
 import time
 
-# ==========================================
-# 1. KONFIGURASI HALAMAN
-# ==========================================
 st.set_page_config(
     page_title="Temu Loka - Social Radar Dashboard",
     layout="wide"
@@ -119,9 +116,7 @@ ALL_POSSIBLE_ARCHETYPES = [
     "Religius", "Social Butterfly", "Sporty", "Techie"
 ]
 
-# ==========================================
-# 2. FUNGSI LOAD DATA
-# ==========================================
+# 2. LOAD DATA
 @st.cache_data(ttl=60)
 def get_archetype_options():
     for attempt in range(3):
@@ -146,9 +141,7 @@ def get_weather_context():
     except: pass
     return "Unknown", "Offline", 0
 
-# ==========================================
 # 3. LOGIKA SESSION STATE
-# ==========================================
 if 'selected_arch_state' not in st.session_state:
     st.session_state.selected_arch_state = "Sporty"
 
@@ -161,11 +154,9 @@ cuaca_main, cuaca_desc, suhu = get_weather_context()
 if st.session_state.selected_arch_state not in opsi_archetype:
     st.session_state.selected_arch_state = opsi_archetype[0]
 
-# ==========================================
 # 4. SIDEBAR
-# ==========================================
 with st.sidebar:
-    st.header("Pusat Komando 💘")
+    st.header("Pusat Komando")
     st.write("### Pilih Tipe Wanita Mu Hari Ini")
     
     st.selectbox(
@@ -180,30 +171,23 @@ with st.sidebar:
     st.markdown("---")
     st.info("**Status:** Saat ini kamu perlu mencari pasangan hidup‼️")
 
-# ==========================================
 # 5. DASHBOARD UTAMA
-# ==========================================
 st.title("Temu Loka Dashboard")
 st.markdown("### Rekomendasi Tempat untuk Menemukan Pasangan di Kota Banjarmasin")
 st.divider()
 
-# --- BAGIAN A: STATUS CUACA ---
 c1, c2, c3 = st.columns(3)
 c1.metric("🌡️ Suhu Lokasi", f"{suhu}°C", cuaca_main)
 c2.metric("🌤️ Cuaca Saat Ini", cuaca_desc.title())
 
-# Logika Status Area juga bisa dipindah ke visualisasi saja, tapi ini masih wajar di UI
 if "Rain" in cuaca_main:
     c3.metric("💈 Pilih Area", "INDOOR MODE", "Waspada", delta_color="inverse")
 else:
     c3.metric("💈 Pilih Area", "OUTDOOR MODE", "Aman", delta_color="normal")
 
-# --- BAGIAN B: HASIL (HERO CARD + LIST) ---
 try:
     con = duckdb.connect(DB_PATH, read_only=True)
-    
-    # PERHATIKAN: Query jadi sangat simpel!
-    # Tidak ada lagi CASE WHEN di sini. Semua sudah "Siap Saji".
+
     query = f"""
         SELECT *
         FROM gold_daily_recommendations 
@@ -216,10 +200,8 @@ try:
     con.close()
     
     if not result.empty:
-        # === 1. HERO SECTION ===
         hero = result.iloc[0]
-        
-        # Langsung pakai kolom 'warna_border' dan 'pesan_strategi' dari database
+
         st.markdown(f"""
         <div class="rec-card" style="border-left: 6px solid {hero['warna_border']};">
             <h3>💈 Pilihan Utama: {hero['nama_tempat']}</h3>
@@ -232,7 +214,6 @@ try:
         </div>
         """, unsafe_allow_html=True)
         
-        # Peta & Tombol (Khusus Hero)
         c_map, c_btn = st.columns([3, 1])
         with c_map:
             st.map(pd.DataFrame({'lat': [hero['lat']], 'lon': [hero['lon']]}))
@@ -240,10 +221,9 @@ try:
             st.write("") 
             st.write("") 
             gmaps_url = f"https://www.google.com/maps?q={hero['lat']},{hero['lon']}"            
-            st.link_button("🚀 Buka Maps", gmaps_url, use_container_width=True)
+            st.link_button("Buka Maps", gmaps_url, use_container_width=True)
 
-        # === 2. LIST SECTION (OPSI CADANGAN) ===
-        # Ambil sisa data (Index 1 sampai habis)
+        #  2. LIST SECTION
         alternatives = result.iloc[1:]
         
         if not alternatives.empty:
@@ -252,7 +232,6 @@ try:
             st.caption("Kurang sreg dengan pilihan di atas? Coba cek tempat ini:")
             
             for index, row in alternatives.iterrows():
-                # Tampilkan sebagai expander (bisa diklik untuk buka detail)
                 with st.expander(f"📍 {row['nama_tempat']} ({row['kategori']})"):
                     
                     # Link Maps Kecil

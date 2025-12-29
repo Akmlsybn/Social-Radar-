@@ -9,9 +9,7 @@ import duckdb
 from datetime import datetime
 import pytz 
 
-# ==============================
 # KONFIGURASI PATH
-# ==============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_SOURCE = BASE_DIR
 LAKE_BRONZE = os.path.join(BASE_DIR, 'datalake', 'bronze')
@@ -24,21 +22,18 @@ os.makedirs(LAKE_GOLD, exist_ok=True)
 
 DB_PATH = os.path.join(LAKE_GOLD, 'social_radar_olap.duckdb')
 
-# ==============================
-# HELPER: CSV CLEANER (ANTI-CRASH)
-# ==============================
 def clean_csv_quotes(file_path):
     """ Mencoba membaca file dengan berbagai encoding agar tidak crash. """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
     except UnicodeDecodeError:
-        print(f"⚠️ Warning: Encoding file {os.path.basename(file_path)} bukan UTF-8. Mencoba Latin-1...")
+        print(f"Warning: Encoding file {os.path.basename(file_path)} bukan UTF-8. Mencoba Latin-1...")
         try:
             with open(file_path, 'r', encoding='latin-1') as f:
                 lines = f.readlines()
         except Exception as e:
-            print(f"❌ Gagal total membaca file. Error: {e}")
+            print(f"Gagal total membaca file. Error: {e}")
             return io.StringIO("") 
 
     cleaned = []
@@ -50,12 +45,6 @@ def clean_csv_quotes(file_path):
     
     return io.StringIO("\n".join(cleaned))
 
-# ==============================
-# HELPER: TIME RULES ENGINE
-# ==============================
-# ==============================
-# HELPER: TIME RULES ENGINE (VERSI BULLETPROOF / KEBAL TYPO)
-# ==============================
 def get_allowed_categories_by_time(con):
     tz = pytz.timezone('Asia/Makassar')
     now = datetime.now(tz)
@@ -69,7 +58,7 @@ def get_allowed_categories_by_time(con):
     category_to_use = real_day 
     status_day = "Normal Day"
 
-    print(f"\n⏰ [TIME CHECK] Real Time: {real_day}, {current_date_str} @ {current_hour}:00 WITA")
+    print(f"\n[TIME CHECK] Real Time: {real_day}, {current_date_str} @ {current_hour}:00 WITA")
 
     # 2. Cek Holiday (Override ke Minggu)
     try:
@@ -80,9 +69,9 @@ def get_allowed_categories_by_time(con):
                 holiday_name = res_holiday[0]
                 status_day = f"Holiday ({holiday_name})"
                 category_to_use = 'Minggu'
-                print(f"🎉 HOLIDAY DETECTED: {holiday_name}! (Mode Liburan Aktif)")
+                print(f"HOLIDAY DETECTED: {holiday_name}! (Mode Liburan Aktif)")
     except Exception as e:
-        print(f"⚠️ Gagal cek hari libur: {e}")
+        print(f"Gagal cek hari libur: {e}")
 
     # 3. Ambil Rule dari Database
     try:
@@ -97,19 +86,18 @@ def get_allowed_categories_by_time(con):
         result = con.execute(query).fetchone()
         
         if not result:
-            print("⚠️ Tidak ada rule waktu cocok (Mungkin tutup/istirahat).")
+            print("Tidak ada rule waktu cocok (Mungkin tutup/istirahat).")
             return [] 
 
         # Bersihkan string dari CSV (Hapus kutip, bagi koma, hapus spasi kiri kanan)
         raw_list = [x.strip().replace('"', '') for x in result[0].split(',')]
-        print(f"📜 Aturan Mentah DB: {raw_list}")
+        print(f"Aturan Mentah DB: {raw_list}")
         
     except Exception as e:
-        print(f"❌ Error Query Rules: {e}")
+        print(f"Error Query Rules: {e}")
         return []
 
     # 4. Dictionary Mapping (NORMALISASI HURUF KECIL)
-    # Kita ubah semua key jadi lowercase agar pencocokan tidak gagal karena huruf besar/kecil
     dictionary_map = {
         "kampus":       ["university", "school", "college"],
         "perpustakaan": ["library"],
@@ -133,29 +121,25 @@ def get_allowed_categories_by_time(con):
     
     print("🔎 Mencocokkan Aturan vs Kamus:")
     for item in raw_list:
-        # KUNCI PERBAIKAN: Ubah item dari CSV jadi huruf kecil bersih
         clean_item = item.lower().strip()
         
         if clean_item in dictionary_map:
             mapped = dictionary_map[clean_item]
             allowed_technical_cats.extend(mapped)
-            print(f"   ✅ '{item}' -> {mapped}")
+            print(f"   [MATCH] '{item}' -> {mapped}")
         else:
-            print(f"   ❌ '{item}' (Clean: '{clean_item}') TIDAK DIKENALI di Kamus! Cek ejaan CSV.")
+            print(f"   [WARN] '{item}' (Clean: '{clean_item}') TIDAK DIKENALI di Kamus! Cek ejaan CSV.")
     
     unique_cats = list(set(allowed_technical_cats))
     print(f"🔓 Total Kategori Diizinkan: {len(unique_cats)} tipe teknis.")
     return unique_cats
 
-# ==============================
 # Extraxt Lokasi dari API
-# ==============================
 def extract_lokasi_api():
     """
     Mengambil data lokasi langsung dari URL (API)
     bukan dari file lokal.
     """
-    # Contoh URL (Ganti dengan URL API asli atau Link Raw GitHub file json Anda)
     api_url = "https://raw.githubusercontent.com/rizkiiirr/Social-Radar/refs/heads/main/lokasi_bjm.json" 
     
     try:
@@ -167,20 +151,16 @@ def extract_lokasi_api():
         return data
         
     except requests.exceptions.RequestException as e:
-        print(f"❌ Gagal menarik API Lokasi: {e}")
+        print(f"Gagal menarik API Lokasi: {e}")
         return None
     
-# ==============================
 # MAIN PIPELINE
-# ==============================
 def run_elt_pipeline():
-    print("🚀 MEMULAI ELT PIPELINE")
+    print("MEMULAI ELT PIPELINE")
 
     # 1. EXTRACT
-    print("📥 [BRONZE] Extracting Data...")
+    print("[BRONZE] Extracting Data")
 
-    # --- A. AMBIL DATA DARI GOOGLE SHEETS (SURVEY) ---
-    # ⚠️ PASTIKAN ANDA MENEMPELKAN LINK CSV ANDA DI BAWAH INI
     SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQn2iBR8DjQEgmZeA4ieEFLr1876iA5fi0F1p5hcNqYNuYEa9Qe6YlUoYRLPubzJ0D1jyD1P8on29jY/pub?output=csv" 
     
     survey_tgt = os.path.join(LAKE_BRONZE, 'hasil_survey.csv')
@@ -192,48 +172,44 @@ def run_elt_pipeline():
         
         with open(survey_tgt, 'wb') as f:
             f.write(response.content)
-        print("   -> Survey: SUKSES Terunduh (Live Data) ✅")
+        print("   -> Survey: SUKSES Terunduh (Live Data) ")
         
     except Exception as e:
-        print(f"   ❌ Gagal download Survey: {e}")
-        # Fallback: Pakai file lokal jika internet mati
+        print(f"Gagal download Survey: {e}")
         local_backup = os.path.join(RAW_SOURCE, 'hasil_survey.csv')
         if os.path.exists(local_backup):
             shutil.copy(local_backup, survey_tgt)
-            print("   ⚠️ Menggunakan File Lokal sebagai cadangan.")
+            print(" Menggunakan File Lokal sebagai cadangan.")
 
-    # --- B. COPY RULES (Tetap File Lokal) ---
-    # Rules jarang berubah, jadi tetap copy dari lokal saja
+    # B. COPY RULES
     rules_file = 'social_time_rules.csv'
     src_rules = os.path.join(RAW_SOURCE, rules_file)
     dst_rules = os.path.join(LAKE_BRONZE, rules_file)
     
     if os.path.exists(src_rules):
         shutil.copy(src_rules, dst_rules)
-        print("   -> Rules: Loaded from Local CSV ✅")
+        print("   -> Rules: Loaded from Local CSV")
 
-    # C. Tarik API Lokasi (AUTO DOWNLOAD)
+    # C. Tarik API Lokasi
     json_data = extract_lokasi_api() # Panggil fungsi API
     
     tgt_path = os.path.join(LAKE_BRONZE, 'lokasi_bjm.json')
 
     if json_data:
-        # Jika API sukses, simpan hasilnya ke Bronze (Menimpa file lama)
         with open(tgt_path, 'w', encoding='utf-8') as f:
             json.dump(json_data, f)
-        print("   -> Lokasi: Updated from API ✅")
+        print("   -> Lokasi: Updated from API ")
     else:
-        # Fallback: Jika API gagal, cek apakah ada file manual/lama
         if os.path.exists(os.path.join(RAW_SOURCE, 'lokasi_bjm.json')):
             shutil.copy(os.path.join(RAW_SOURCE, 'lokasi_bjm.json'), tgt_path)
-            print("   -> Lokasi: API Failed, using Local Backup ⚠️")
+            print("   -> Lokasi: API Failed, using Local Backup ")
         else:
-            print("   -> Lokasi: DATA MISSING ❌")
+            print("   -> Lokasi: DATA MISSING")
 
     # 2. TRANSFORM SURVEY
-    print("⚙️ [SILVER] Survey...")
+    print("[SILVER] Survey...")
     survey_path = os.path.join(LAKE_BRONZE, 'hasil_survey.csv')
-    df_silver = pd.DataFrame() # Inisialisasi kosong agar aman
+    df_silver = pd.DataFrame()
 
     if os.path.exists(survey_path):
         df_raw = pd.read_csv(clean_csv_quotes(survey_path))
@@ -243,11 +219,11 @@ def run_elt_pipeline():
             'Religius': ('relig_fisik_cowo', 'relig_lokasi'),
             'Intellectual': ('intel_fisik_cowo', 'intel_lokasi'),
             'Creative': ('creative_fisik_cowo', 'creative_lokasi'),
-            'Social Butterfly': ('social_fisik_cowo', 'social_lokasi'), # Perbaikan Nama Key
+            'Social Butterfly': ('social_fisik_cowo', 'social_lokasi'), 
             'Sporty': ('sporty_fisik_cowo', 'sporty_lokasi'),
             'Techie': ('techie_fisik_cowo', 'techie_lokasi'),
             'Active': ('active_fisik_cowo', 'active_lokasi'),
-            'Healing': ('active_fisik_cowo', 'active_lokasi') # Fallback jika Healing tidak ada kolomnya
+            'Healing': ('active_fisik_cowo', 'active_lokasi') 
         }
         rows = []
         for arch, (fisik_col, lokasi_col) in arch_map.items():
@@ -262,7 +238,7 @@ def run_elt_pipeline():
             df_silver.to_parquet(os.path.join(LAKE_SILVER, 'survey_data.parquet'), index=False)
 
     # 3. TRANSFORM RULES
-    print("⚙️ [SILVER] Rules...")
+    print("[SILVER] Rules...")
     rules_path = os.path.join(LAKE_BRONZE, 'social_time_rules.csv')
     if os.path.exists(rules_path):
         df_rules = pd.read_csv(clean_csv_quotes(rules_path))
@@ -270,7 +246,7 @@ def run_elt_pipeline():
         df_rules.to_parquet(os.path.join(LAKE_SILVER, 'rules_data.parquet'), index=False)
 
     # 4. TRANSFORM LOCATIONS
-    print("⚙️ [SILVER] Locations...")
+    print("[SILVER] Locations...")
     loc_path = os.path.join(LAKE_BRONZE, 'lokasi_bjm.json')
     if os.path.exists(loc_path):
         with open(loc_path, 'r', encoding='utf-8') as f: data = json.load(f)
@@ -289,22 +265,15 @@ def run_elt_pipeline():
         df_loc.to_parquet(os.path.join(LAKE_SILVER, 'locations.parquet'), index=False)
 
     # 4.5. TRANSFORM HOLIDAYS (NoSQL Source)
-    print("⚙️ [SILVER] Holidays (NoSQL)...")
-    db_source_path = os.path.join(BASE_DIR, 'holidays.db') # Ambil dari root folder
+    print("[SILVER] Holidays (NoSQL)...")
+    db_source_path = os.path.join(BASE_DIR, 'holidays.db') 
     
     if os.path.exists(db_source_path):
         try:
-            # A. Extract dari SQL Database (Bukan JSON lagi)
-            # Koneksi ke Database SQLite
+            # A. Extract dari SQL Database
             con_sql = sqlite3.connect(db_source_path)
-            
-            # Query SQL standard
             query_sql = "SELECT date, name FROM holidays"
-            
-            # Baca langsung ke Pandas DataFrame
             df_holidays = pd.read_sql_query(query_sql, con_sql)
-            
-            # Tutup koneksi
             con_sql.close()
             
             # B. Transform (Pastikan format tanggal)
@@ -315,30 +284,26 @@ def run_elt_pipeline():
             print(f"   -> Holidays loaded from SQL DB: {len(df_holidays)} events found.")
             
         except Exception as e:
-            print(f"⚠️ Gagal memproses Holidays dari SQL: {e}")
+            print(f"Gagal memproses Holidays dari SQL: {e}")
     else:
-        print(f"⚠️ File database '{db_source_path}' tidak ditemukan. Jalankan init_db.py dulu!")
+        print(f"File database '{db_source_path}' tidak ditemukan. Jalankan init_db.py dulu!")
 
-    # 5. AGGREGATION (REVISI: FORCE ALL ARCHETYPES)
+    # 5. AGGREGATION 
     print("🏆 [GOLD] Aggregating & Strategy Planning...")
     
-    # Simpan Lokasi Terpopuler (Global Top)
     if not df_loc.empty:
         df_gold_loc = df_loc.groupby(['kategori', 'nama_tempat', 'lat', 'lon']).size().reset_index(name='score').sort_values('score', ascending=False).head(300)
         df_gold_loc.to_parquet(os.path.join(LAKE_GOLD, 'gold_locations.parquet'), index=False)
     else:
         df_gold_loc = pd.DataFrame(columns=['kategori', 'nama_tempat', 'lat', 'lon', 'score'])
 
-    # Hitung Survey Asli (Tanpa Dummy)
     if not df_silver.empty:
         df_feat = (df_silver.groupby('archetype').size().reset_index(name='jumlah').sort_values('jumlah', ascending=False))
     else:
         df_feat = pd.DataFrame(columns=['archetype', 'jumlah'])
     
-    # Simpan Data Features Asli
     df_feat.to_parquet(os.path.join(LAKE_GOLD, 'gold_features.parquet'), index=False)
 
-    # --- PISAHKAN ARCHETYPE: ADA DATA VS KOSONG ---
     all_archs = ['Active', 'Creative', 'Healing', 'Intellectual', 'Religius', 'Social Butterfly', 'Sporty', 'Techie']
     existing_archs = df_feat['archetype'].tolist() if not df_feat.empty else []
     
@@ -347,9 +312,7 @@ def run_elt_pipeline():
     print(f"   -> Personalized Strategy untuk: {existing_archs}")
     print(f"   -> Global Top Strategy untuk: {missing_archs}")
 
-    # =========================================
     # 6. SERVING (DUCKDB)
-    # =========================================
     print(f"💾 [SQL] Building Data Warehouse...")
     con = duckdb.connect(DB_PATH)
     con.execute("CREATE OR REPLACE TABLE gold_features AS SELECT * FROM df_feat")
@@ -357,7 +320,7 @@ def run_elt_pipeline():
     con.execute(f"CREATE OR REPLACE TABLE gold_rules AS SELECT * FROM '{os.path.join(LAKE_SILVER, 'rules_data.parquet')}'")
     con.execute(f"CREATE OR REPLACE TABLE gold_holidays AS SELECT * FROM '{os.path.join(LAKE_SILVER, 'holidays.parquet')}'")
 
-    # Ambil Filter Waktu
+    # Filter Waktu
     allowed_cats = get_allowed_categories_by_time(con)
     time_filter_sql = ""
     if allowed_cats:
@@ -366,7 +329,7 @@ def run_elt_pipeline():
     else:
         time_filter_sql = "AND 1=0"
 
-    # Ambil Context Cuaca
+    # Context Cuaca
     cuaca_main = "Clear"
     indoor_cats = "'mall', 'cafe', 'library', 'museum', 'book_store', 'restaurant', 'fast_food', 'food_court', 'shop', 'electronics', 'clothes', 'gym', 'mosque', 'place_of_worship'"
     try:
@@ -374,14 +337,6 @@ def run_elt_pipeline():
         if res: cuaca_main = res[0]
     except: pass
 
-    # ========================================================
-    # QUERY REKOMENDASI CERDAS (HYBRID)
-    # ========================================================
-    # Kita menggunakan UNION ALL untuk menggabungkan dua logika:
-    # 1. Logic A: Untuk Archetype yang ADA data surveynya (Personalized by Category)
-    # 2. Logic B: Untuk Archetype yang KOSONG (Fallback ke Top Global Places)
-    
-    # Siapkan list missing untuk di-inject ke SQL
     missing_sql_list = ", ".join([f"'{x}'" for x in missing_archs])
     
     query = f"""
@@ -427,8 +382,8 @@ def run_elt_pipeline():
                 -- LOGIKA STRATEGI & WARNA (Sama seperti sebelumnya)
                 CASE 
                     WHEN '{cuaca_main}' LIKE '%Rain%' AND kategori NOT IN ({indoor_cats}) 
-                    THEN '**Strategi 💘:** Cuaca hujan. Bawa payung atau cari opsi indoor.'
-                    ELSE '**Strategi 💘:** Cuaca mendukung. Segera meluncur!'
+                    THEN 'Strategi : Cuaca hujan. Bawa payung atau cari opsi indoor.'
+                    ELSE 'Strategi : Cuaca mendukung. Segera meluncur!'
                 END as pesan_strategi,
                 
                 CASE 
@@ -444,36 +399,30 @@ def run_elt_pipeline():
         SELECT * FROM Finalized WHERE rank_urutan <= 10 AND archetype != 'IGNORE_ME'
     """
     
-# Eksekusi Query hanya jika ada data lokasi
     if not df_gold_loc.empty:
-        
-        # JANGAN LAKUKAN SPLIT QUERY! 
-        # Kita ingin logika 'Finalized' (Warna & Strategi) tetap jalan meskipun missing_archs kosong.
-        
-        # HACK: Jika list missing kosong, ganti dengan dummy agar SQL tidak error
+                
+        # HACK: 
         if not missing_archs:
              query = query.replace(f"unnest([{missing_sql_list}])", "unnest(['IGNORE_ME'])")
 
         con.execute(query)
         count = con.execute("SELECT COUNT(*) FROM gold_daily_recommendations").fetchone()[0]
-        print(f"✅ ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
+        print(f"ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
     else:
-        print("❌ Data Lokasi Kosong. Pipeline finish without result.")
+        print("Data Lokasi Kosong. Pipeline finish without result.")
 
-        # HACK KECIL: Jika missing_archs kosong, SQL "unnest([])" akan error.
-       # ... (bagian eksekusi query)
+        # HACK 
     if not df_gold_loc.empty:
         if not missing_archs:
              query = query.replace(f"unnest([{missing_sql_list}])", "unnest(['IGNORE_ME'])")
 
         con.execute(query)
         count = con.execute("SELECT COUNT(*) FROM gold_daily_recommendations").fetchone()[0]
-        print(f"✅ ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
+        print(f"ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
     else:
-        print("❌ Data Lokasi Kosong. Pipeline finish without result.")
+        print("Data Lokasi Kosong. Pipeline finish without result.")
 
     con.close()
-    # Tidak ada print lagi disini
 
 if __name__ == "__main__":
     run_elt_pipeline()

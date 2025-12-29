@@ -3,20 +3,16 @@ import json
 import os
 
 def init_database():
-    print("⚙️ Inisialisasi Database SQL (SQLite)...")
+    print("Inisialisasi Database SQL (SQLite)...")
     
-    # Nama file database yang akan dibuat
     db_file = "holidays.db"
     
-    # Hapus file lama jika ada (biar fresh)
     if os.path.exists(db_file):
         os.remove(db_file)
         
-    # 1. Koneksi ke SQLite
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     
-    # 2. Buat Tabel
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS holidays (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,8 +21,6 @@ def init_database():
         )
     ''')
     
-    # 3. Data Liburan (Pindahkan dari holidays.json ke sini)
-    # Anda bisa copy-paste isi holidays.json Anda ke variabel ini
     data_liburan = [
         {"date": "2024-01-01", "name": "Tahun Baru Masehi"},
         {"date": "2024-02-08", "name": "Isra Mi'raj"},
@@ -46,7 +40,6 @@ def init_database():
         {"date": "2024-12-25", "name": "Hari Raya Natal"}
     ]
     
-    # 4. Insert Data ke Tabel
     count = 0
     for item in data_liburan:
         cursor.execute("INSERT INTO holidays (date, name) VALUES (?, ?)", (item['date'], item['name']))
@@ -55,7 +48,7 @@ def init_database():
     conn.commit()
     conn.close()
     
-    print(f"✅ Sukses! Database '{db_file}' berhasil dibuat dengan {count} data.")
+    print(f"Sukses! Database '{db_file}' berhasil dibuat dengan {count} data.")
 
 if __name__ == "__main__":
     init_database()
