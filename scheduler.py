@@ -91,8 +91,8 @@ def job_runner():
             
             print("✅ Siklus Selesai. Menunggu 30 Menit...")
             
-            # 3. Tidur (Jeda)
-            # 1800 detik = 30 menit
+            # 3. Tidur (Jeda) 30 menit
+            print("⏳ Tidur selama 30 menit...")
             time.sleep(1800) 
             
         except KeyboardInterrupt:
