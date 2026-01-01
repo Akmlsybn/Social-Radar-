@@ -1,30 +1,67 @@
 version: "3.8"
 
 services:
-  # 1. SCHEDULER
+  # 1. MINIO SERVER (Gudang Data / Object Storage)
+  minio:
+    image: minio/minio:latest
+    container_name: social_radar_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # Port API (dipakai kode Python)
+      - "9001:9001" # Port Web UI (buka di browser)
+    volumes:
+      - minio_data:/data
+    restart: always
+
+  # 2. CREATE BUCKETS (Setup Otomatis)
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/datalake;
+      exit 0;
+      "
+
+  # 3. SCHEDULER (Pipeline ELT)
   scheduler:
     build: .
     container_name: social_radar_scheduler
     command: python scheduler.py
-    volumes:
-      - ./datalake:/app/datalake
-    env_file:
-      - .env
-    restart: always
+    # Volume './datalake' DIHAPUS karena kita pakai MinIO
     environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY} # Pastikan ada di .env atau isi manual
       - PYTHONUNBUFFERED=1
+    depends_on:
+      - minio
+      - createbuckets
+    restart: always
 
-  # 2. DASHBOARD
+  # 4. DASHBOARD (Streamlit App)
   dashboard:
     build: .
     container_name: social_radar_app
     command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
-    volumes:
-      - ./datalake:/app/datalake
+    # Volume './datalake' DIHAPUS karena kita download dari MinIO
     ports:
       - "8501:8501"
-    env_file:
-      - .env
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
     depends_on:
       - scheduler
+      - minio
     restart: always
+
+# Volume Persisten untuk MinIO (Biar data gak hilang pas restart)
+volumes:
+  minio_data:

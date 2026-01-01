@@ -1,6 +1,6 @@
 day_category,start_hour,end_hour,phase_name,status_kampus,status_sosial,rekomendasi_prioritas
 "Senin,0,7,Jam Istirahat,Tutup,Sepi,""Rumah, Kost, Hotel, Cafe, Restoran, Tempat Ibadah"""
-"Senin,7,17,Jam Kuliah Sibuk,Sangat Aktif,Sepi,""Kampus, Perpustakaan, Toko Buku, Museum, Café, Tempat Ibadah"""
+"Senin,7,17,Jam Kuliah Sibuk,Sangat Aktif,Sepi,""Kampus, Perpustakaan, Toko Buku, Museum, Cafe, Tempat Ibadah"""
 "Senin,17,24,After Campus,Tutup,Sedang,""Cafe, Mall, Taman Kota, Thrift Shop, Tempat Ibadah"""
 "Selasa,0,7,Jam Istirahat,Tutup,Sepi,""Rumah, Kost, Hotel, Cafe, Restoran, Tempat Ibadah"""
 "Selasa,7,17,Jam Kuliah Sibuk,Sangat Aktif,Sepi,""Kampus, Perpustakaan, Toko Buku, Museum, Cafe, Tempat Ibadah"""

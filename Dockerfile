@@ -5,6 +5,7 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Install dependencies sistem dasar
+# (build-essential berguna jika ada library python yang butuh compile C++)
 RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -16,15 +17,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy seluruh file proyek ke dalam container
 COPY . .
 
-RUN python init_db.py
+# HAPUS: RUN python init_db.py 
+# (Kita tidak butuh init database lokal lagi karena semua diproses di pipeline ke MinIO)
 
-# Buat folder datalake (jika belum ada)
-RUN mkdir -p datalake/bronze datalake/silver datalake/gold
+# HAPUS: RUN mkdir -p datalake... 
+# (Kita tidak butuh folder datalake lokal, karena kita pakai MinIO dan /tmp)
 
 # Buka port untuk Streamlit
 EXPOSE 8501
 
-# PERINTAH UTAMA:
-# 1. Jalankan ELT Pipeline (Extract-Load-Transform)
-# 2. Jika sukses, jalankan Streamlit App
-CMD python elt_pipeline.py && streamlit run app.py --server.address=0.0.0.0
+# Command default (ini hanya fallback, karena akan di-override oleh docker-compose)
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]

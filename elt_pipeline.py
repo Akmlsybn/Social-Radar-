@@ -7,33 +7,44 @@ import sqlite3
 import json
 import duckdb
 from datetime import datetime
-import pytz 
+import pytz
+from minio import Minio
 
-# KONFIGURASI PATH
+# --- KONFIGURASI MINIO ---
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
+BUCKET_NAME = "datalake"
+
+# Folder Kerja Sementara (Ephemeral)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RAW_SOURCE = BASE_DIR
-LAKE_BRONZE = os.path.join(BASE_DIR, 'datalake', 'bronze')
-LAKE_SILVER = os.path.join(BASE_DIR, 'datalake', 'silver')
-LAKE_GOLD   = os.path.join(BASE_DIR, 'datalake', 'gold')
+TEMP_DIR = "/tmp/social_radar"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-os.makedirs(LAKE_BRONZE, exist_ok=True)
-os.makedirs(LAKE_SILVER, exist_ok=True)
-os.makedirs(LAKE_GOLD, exist_ok=True)
+# Inisialisasi MinIO Client
+client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
 
-DB_PATH = os.path.join(LAKE_GOLD, 'social_radar_olap.duckdb')
+# --- FUNGSI BANTU MINIO ---
+def upload_file(folder, filename, file_path):
+    """Upload file lokal ke MinIO bucket"""
+    try:
+        if not client.bucket_exists(BUCKET_NAME): client.make_bucket(BUCKET_NAME)
+        object_name = f"{folder}/{filename}"
+        client.fput_object(BUCKET_NAME, object_name, file_path)
+        print(f"   ☁️ [MINIO] Uploaded: {object_name}")
+    except Exception as e: print(f"   ❌ Error Upload MinIO: {e}")
 
+# --- FUNGSI LOGIKA ASLI (TIDAK DIRUBAH) ---
 def clean_csv_quotes(file_path):
     """ Mencoba membaca file dengan berbagai encoding agar tidak crash. """
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        with open(file_path, 'r', encoding='utf-8') as f: lines = f.readlines()
     except UnicodeDecodeError:
         print(f"Warning: Encoding file {os.path.basename(file_path)} bukan UTF-8. Mencoba Latin-1...")
         try:
-            with open(file_path, 'r', encoding='latin-1') as f:
-                lines = f.readlines()
+            with open(file_path, 'r', encoding='latin-1') as f: lines = f.readlines()
         except Exception as e:
-            print(f"Gagal total membaca file. Error: {e}")
             return io.StringIO("") 
 
     cleaned = []
@@ -48,301 +59,249 @@ def clean_csv_quotes(file_path):
 def get_allowed_categories_by_time(con):
     tz = pytz.timezone('Asia/Makassar')
     now = datetime.now(tz)
-    
     current_date_str = now.strftime("%Y-%m-%d")
     current_hour = now.hour
     
-    # 1. Cek Hari Normal
     day_map = {0: 'Senin', 1: 'Selasa', 2: 'Rabu', 3: 'Kamis', 4: 'Jumat', 5: 'Sabtu', 6: 'Minggu'}
     real_day = day_map[now.weekday()]
     category_to_use = real_day 
-    status_day = "Normal Day"
-
     print(f"\n[TIME CHECK] Real Time: {real_day}, {current_date_str} @ {current_hour}:00 WITA")
 
-    # 2. Cek Holiday (Override ke Minggu)
+    # Cek Holiday (Override ke Minggu)
     try:
+        # Cek apakah tabel ada di DuckDB Memory
         tbl_exists = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'gold_holidays'").fetchone()[0]
         if tbl_exists > 0:
             res_holiday = con.execute(f"SELECT name FROM gold_holidays WHERE CAST(date AS VARCHAR) = '{current_date_str}'").fetchone()
             if res_holiday:
-                holiday_name = res_holiday[0]
-                status_day = f"Holiday ({holiday_name})"
                 category_to_use = 'Minggu'
-                print(f"HOLIDAY DETECTED: {holiday_name}! (Mode Liburan Aktif)")
-    except Exception as e:
-        print(f"Gagal cek hari libur: {e}")
+                print(f"HOLIDAY DETECTED: {res_holiday[0]}! (Mode Liburan Aktif)")
+    except Exception as e: print(f"Gagal cek hari libur: {e}")
 
-    # 3. Ambil Rule dari Database
+    # Ambil Rule
     try:
         query = f"""
-            SELECT rekomendasi_prioritas 
-            FROM gold_rules 
+            SELECT rekomendasi_prioritas FROM gold_rules 
             WHERE day_category = '{category_to_use}' 
               AND {current_hour} >= CAST(start_hour AS INTEGER) 
-              AND {current_hour} < CAST(end_hour AS INTEGER)
-            LIMIT 1
+              AND {current_hour} < CAST(end_hour AS INTEGER) LIMIT 1
         """
         result = con.execute(query).fetchone()
-        
-        if not result:
-            print("Tidak ada rule waktu cocok (Mungkin tutup/istirahat).")
-            return [] 
-
-        # Bersihkan string dari CSV (Hapus kutip, bagi koma, hapus spasi kiri kanan)
+        if not result: return [] 
         raw_list = [x.strip().replace('"', '') for x in result[0].split(',')]
-        print(f"Aturan Mentah DB: {raw_list}")
-        
-    except Exception as e:
-        print(f"Error Query Rules: {e}")
-        return []
+    except Exception as e: return []
 
-    # 4. Dictionary Mapping (NORMALISASI HURUF KECIL)
+    # Dictionary Mapping (ASLI)
     dictionary_map = {
-        "kampus":       ["university", "school", "college"],
-        "perpustakaan": ["library"],
-        "toko buku":    ["book_store"],
-        "museum":       ["museum", "arts_centre", "gallery"],
-        "cafe":         ["cafe", "coffee_shop", "restaurant", "fast_food", "food_court"],
-        "restoran":     ["restaurant", "fast_food", "food_court"],
-        "mall":         ["mall", "department_store", "shop", "electronics", "clothes"],
-        "taman kota":   ["park", "garden", "playground", "recreation_ground", "viewpoint", "river_bank"],
-        "tempat ibadah":["place_of_worship", "mosque"],
-        "gym":          ["gym", "sports_centre", "stadium"],
-        "art gallery":  ["arts_centre", "gallery"],
-        "thrift shop":  ["shop", "clothes"],
-        "car free day": ["park", "street"],
-        "hotel":        ["hotel"],
-        "rumah":        ["residential"],
-        "kost":         ["residential"]
+        "kampus": ["university", "school", "college"], "perpustakaan": ["library"], "toko buku": ["book_store"],
+        "museum": ["museum", "arts_centre", "gallery"], "cafe": ["cafe", "coffee_shop", "restaurant", "fast_food", "food_court"],
+        "restoran": ["restaurant", "fast_food", "food_court"], "mall": ["mall", "department_store", "shop", "electronics", "clothes"],
+        "taman kota": ["park", "garden", "playground", "recreation_ground", "viewpoint", "river_bank"],
+        "tempat ibadah":["place_of_worship", "mosque"], "gym": ["gym", "sports_centre", "stadium"],
+        "art gallery": ["arts_centre", "gallery"], "thrift shop": ["shop", "clothes"],
+        "car free day": ["park", "street"], "hotel": ["hotel"], "rumah": ["residential"], "kost": ["residential"]
     }
     
     allowed_technical_cats = []
-    
-    print("🔎 Mencocokkan Aturan vs Kamus:")
     for item in raw_list:
         clean_item = item.lower().strip()
-        
         if clean_item in dictionary_map:
-            mapped = dictionary_map[clean_item]
-            allowed_technical_cats.extend(mapped)
-            print(f"   [MATCH] '{item}' -> {mapped}")
-        else:
-            print(f"   [WARN] '{item}' (Clean: '{clean_item}') TIDAK DIKENALI di Kamus! Cek ejaan CSV.")
+            allowed_technical_cats.extend(dictionary_map[clean_item])
     
-    unique_cats = list(set(allowed_technical_cats))
-    print(f"🔓 Total Kategori Diizinkan: {len(unique_cats)} tipe teknis.")
-    return unique_cats
+    return list(set(allowed_technical_cats))
 
-# Extraxt Lokasi dari API
 def extract_lokasi_api():
-    """
-    Mengambil data lokasi langsung dari URL (API)
-    bukan dari file lokal.
-    """
-    api_url = "https://raw.githubusercontent.com/rizkiiirr/Social-Radar/refs/heads/main/lokasi_bjm.json" 
-    
     try:
+        api_url = "https://raw.githubusercontent.com/rizkiiirr/Social-Radar/refs/heads/main/lokasi_bjm.json" 
         response = requests.get(api_url, timeout=10)
-        response.raise_for_status() # Cek error HTTP
-        
-        data = response.json()
-        print(f"[API] Sukses menarik data dari internet.")
-        return data
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Gagal menarik API Lokasi: {e}")
-        return None
-    
-# MAIN PIPELINE
+        return response.json() if response.status_code == 200 else None
+    except: return None
+
+# Fungsi Tambahan: Extract Cuaca (Agar pipeline mandiri)
+def extract_weather_data():
+    data = {"main": "Clouds", "temp": 29.5, "description": "berawan (default)"}
+    try:
+        if OPENWEATHER_API_KEY:
+            url = f"https://api.openweathermap.org/data/2.5/weather?q=Banjarmasin&appid={OPENWEATHER_API_KEY}&units=metric"
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                d = r.json()
+                data = {"main": d['weather'][0]['main'], "temp": d['main']['temp'], "description": d['weather'][0]['description']}
+    except: pass
+    return data
+
+# --- MAIN PIPELINE (MODIFIKASI: OUTPUT KE MINIO PARQUET) ---
 def run_elt_pipeline():
-    print("MEMULAI ELT PIPELINE")
+    print("🚀 MEMULAI ELT PIPELINE (LAKEHOUSE MODE)")
 
-    # 1. EXTRACT
-    print("[BRONZE] Extracting Data")
+    # 0. WEATHER (Bronze -> Silver -> MinIO)
+    w_data = extract_weather_data()
+    # Simpan weather parquet untuk App
+    pd.DataFrame([w_data]).to_parquet(os.path.join(TEMP_DIR, 'context_weather.parquet'), index=False)
+    upload_file("gold", "context_weather.parquet", os.path.join(TEMP_DIR, 'context_weather.parquet'))
 
+    # 1. EXTRACT (BRONZE)
+    print("[BRONZE] Extracting Data...")
     SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQn2iBR8DjQEgmZeA4ieEFLr1876iA5fi0F1p5hcNqYNuYEa9Qe6YlUoYRLPubzJ0D1jyD1P8on29jY/pub?output=csv" 
     
-    survey_tgt = os.path.join(LAKE_BRONZE, 'hasil_survey.csv')
+    # Path Sementara
+    p_survey = os.path.join(TEMP_DIR, 'hasil_survey.csv')
+    p_rules = os.path.join(TEMP_DIR, 'social_time_rules.csv')
+    p_loc = os.path.join(TEMP_DIR, 'lokasi_bjm.json')
 
+    # Download Survey
     try:
-        print("   -> Mengunduh Survey dari Google Sheets...")
-        response = requests.get(SHEET_URL, timeout=10)
-        response.raise_for_status()
-        
-        with open(survey_tgt, 'wb') as f:
-            f.write(response.content)
-        print("   -> Survey: SUKSES Terunduh (Live Data) ")
-        
-    except Exception as e:
-        print(f"Gagal download Survey: {e}")
-        local_backup = os.path.join(RAW_SOURCE, 'hasil_survey.csv')
-        if os.path.exists(local_backup):
-            shutil.copy(local_backup, survey_tgt)
-            print(" Menggunakan File Lokal sebagai cadangan.")
+        with open(p_survey, 'wb') as f: f.write(requests.get(SHEET_URL).content)
+        upload_file("bronze", "hasil_survey.csv", p_survey)
+    except: 
+        # Fallback lokal jika internet mati
+        if os.path.exists('hasil_survey.csv'): shutil.copy('hasil_survey.csv', p_survey)
 
-    # B. COPY RULES
-    rules_file = 'social_time_rules.csv'
-    src_rules = os.path.join(RAW_SOURCE, rules_file)
-    dst_rules = os.path.join(LAKE_BRONZE, rules_file)
-    
-    if os.path.exists(src_rules):
-        shutil.copy(src_rules, dst_rules)
-        print("   -> Rules: Loaded from Local CSV")
+    # Copy Rules
+    if os.path.exists('social_time_rules.csv'):
+        shutil.copy('social_time_rules.csv', p_rules)
+        upload_file("bronze", "social_time_rules.csv", p_rules)
 
-    # C. Tarik API Lokasi
-    json_data = extract_lokasi_api() # Panggil fungsi API
-    
-    tgt_path = os.path.join(LAKE_BRONZE, 'lokasi_bjm.json')
-
+    # API Lokasi
+    json_data = extract_lokasi_api()
     if json_data:
-        with open(tgt_path, 'w', encoding='utf-8') as f:
-            json.dump(json_data, f)
-        print("   -> Lokasi: Updated from API ")
-    else:
-        if os.path.exists(os.path.join(RAW_SOURCE, 'lokasi_bjm.json')):
-            shutil.copy(os.path.join(RAW_SOURCE, 'lokasi_bjm.json'), tgt_path)
-            print("   -> Lokasi: API Failed, using Local Backup ")
-        else:
-            print("   -> Lokasi: DATA MISSING")
+        with open(p_loc, 'w', encoding='utf-8') as f: json.dump(json_data, f)
+        upload_file("bronze", "lokasi_bjm.json", p_loc)
+    elif os.path.exists('lokasi_bjm.json'):
+        shutil.copy('lokasi_bjm.json', p_loc)
 
-    # 2. TRANSFORM SURVEY
-    print("[SILVER] Survey...")
-    survey_path = os.path.join(LAKE_BRONZE, 'hasil_survey.csv')
+    # 2. TRANSFORM (SILVER)
+    print("[SILVER] Transforming...")
+    
+    # Survey
     df_silver = pd.DataFrame()
-
-    if os.path.exists(survey_path):
-        df_raw = pd.read_csv(clean_csv_quotes(survey_path))
+    if os.path.exists(p_survey):
+        df_raw = pd.read_csv(clean_csv_quotes(p_survey))
         df_raw.columns = [c.lower().strip().replace(" ", "_") for c in df_raw.columns]
-        
         arch_map = {
-            'Religius': ('relig_fisik_cowo', 'relig_lokasi'),
-            'Intellectual': ('intel_fisik_cowo', 'intel_lokasi'),
-            'Creative': ('creative_fisik_cowo', 'creative_lokasi'),
-            'Social Butterfly': ('social_fisik_cowo', 'social_lokasi'), 
-            'Sporty': ('sporty_fisik_cowo', 'sporty_lokasi'),
-            'Techie': ('techie_fisik_cowo', 'techie_lokasi'),
-            'Active': ('active_fisik_cowo', 'active_lokasi'),
-            'Healing': ('active_fisik_cowo', 'active_lokasi') 
+            'Religius': ('relig_fisik_cowo', 'relig_lokasi'), 'Intellectual': ('intel_fisik_cowo', 'intel_lokasi'),
+            'Creative': ('creative_fisik_cowo', 'creative_lokasi'), 'Social Butterfly': ('social_fisik_cowo', 'social_lokasi'), 
+            'Sporty': ('sporty_fisik_cowo', 'sporty_lokasi'), 'Techie': ('techie_fisik_cowo', 'techie_lokasi'),
+            'Active': ('active_fisik_cowo', 'active_lokasi'), 'Healing': ('active_fisik_cowo', 'active_lokasi') 
         }
         rows = []
-        for arch, (fisik_col, lokasi_col) in arch_map.items():
-            if fisik_col in df_raw.columns:
-                temp = df_raw[['timestamp', 'gender', fisik_col, lokasi_col]].copy()
-                temp.rename(columns={fisik_col: 'ciri_fisik', lokasi_col: 'habitat'}, inplace=True)
-                temp['archetype'] = arch
-                temp.dropna(subset=['ciri_fisik'], inplace=True)
+        for arch, (f_col, l_col) in arch_map.items():
+            if f_col in df_raw.columns:
+                temp = df_raw[['timestamp', 'gender', f_col, l_col]].copy()
+                temp.rename(columns={f_col:'ciri_fisik', l_col:'habitat'}, inplace=True)
+                temp['archetype'] = arch; temp.dropna(subset=['ciri_fisik'], inplace=True)
                 rows.append(temp)
         if rows:
             df_silver = pd.concat(rows, ignore_index=True)
-            df_silver.to_parquet(os.path.join(LAKE_SILVER, 'survey_data.parquet'), index=False)
+            path_svy_silver = os.path.join(TEMP_DIR, 'survey_data.parquet')
+            df_silver.to_parquet(path_svy_silver, index=False)
+            upload_file("silver", "survey_data.parquet", path_svy_silver)
 
-    # 3. TRANSFORM RULES
-    print("[SILVER] Rules...")
-    rules_path = os.path.join(LAKE_BRONZE, 'social_time_rules.csv')
-    if os.path.exists(rules_path):
-        df_rules = pd.read_csv(clean_csv_quotes(rules_path))
+    # Rules
+    if os.path.exists(p_rules):
+        df_rules = pd.read_csv(clean_csv_quotes(p_rules))
         df_rules.columns = [c.lower().strip().replace(" ", "_") for c in df_rules.columns]
-        df_rules.to_parquet(os.path.join(LAKE_SILVER, 'rules_data.parquet'), index=False)
+        path_rules_silver = os.path.join(TEMP_DIR, 'rules_data.parquet')
+        df_rules.to_parquet(path_rules_silver, index=False)
+        upload_file("silver", "rules_data.parquet", path_rules_silver)
 
-    # 4. TRANSFORM LOCATIONS
-    print("[SILVER] Locations...")
-    loc_path = os.path.join(LAKE_BRONZE, 'lokasi_bjm.json')
-    if os.path.exists(loc_path):
-        with open(loc_path, 'r', encoding='utf-8') as f: data = json.load(f)
+    # Locations
+    df_loc = pd.DataFrame()
+    if os.path.exists(p_loc):
+        with open(p_loc, 'r') as f: data = json.load(f)
         rows = []
         for el in data.get("elements", []):
             tags = el.get("tags", {})
             name = tags.get("name")
             if not name: continue
-            kategori = "other"
-            for key in ["amenity", "leisure", "shop", "tourism", "building"]:
-                if tags.get(key): kategori = tags[key]; break
+            cat = "other"
+            for k in ["amenity", "leisure", "shop", "tourism", "building"]: 
+                if tags.get(k): cat = tags[k]; break
             lat = el.get("lat") or el.get("center", {}).get("lat")
             lon = el.get("lon") or el.get("center", {}).get("lon")
-            if lat and lon: rows.append({"nama_tempat": name, "kategori": kategori, "lat": lat, "lon": lon})
+            if lat and lon: rows.append({"nama_tempat": name, "kategori": cat, "lat": lat, "lon": lon})
         df_loc = pd.DataFrame(rows)
-        df_loc.to_parquet(os.path.join(LAKE_SILVER, 'locations.parquet'), index=False)
+        path_loc_silver = os.path.join(TEMP_DIR, 'locations.parquet')
+        df_loc.to_parquet(path_loc_silver, index=False)
+        upload_file("silver", "locations.parquet", path_loc_silver)
 
-    # 4.5. TRANSFORM HOLIDAYS (NoSQL Source)
-    print("[SILVER] Holidays (NoSQL)...")
-    db_source_path = os.path.join(BASE_DIR, 'holidays.db') 
-    
-    if os.path.exists(db_source_path):
+    # Holidays (SQLite Local)
+    if os.path.exists('holidays.db'):
         try:
-            # A. Extract dari SQL Database
-            con_sql = sqlite3.connect(db_source_path)
-            query_sql = "SELECT date, name FROM holidays"
-            df_holidays = pd.read_sql_query(query_sql, con_sql)
+            con_sql = sqlite3.connect('holidays.db')
+            df_hol = pd.read_sql_query("SELECT date, name FROM holidays", con_sql)
             con_sql.close()
-            
-            # B. Transform (Pastikan format tanggal)
-            df_holidays['date'] = pd.to_datetime(df_holidays['date']).dt.date
-            
-            # C. Load ke Silver
-            df_holidays.to_parquet(os.path.join(LAKE_SILVER, 'holidays.parquet'), index=False)
-            print(f"   -> Holidays loaded from SQL DB: {len(df_holidays)} events found.")
-            
-        except Exception as e:
-            print(f"Gagal memproses Holidays dari SQL: {e}")
-    else:
-        print(f"File database '{db_source_path}' tidak ditemukan. Jalankan init_db.py dulu!")
+            df_hol['date'] = pd.to_datetime(df_hol['date']).dt.date
+            path_hol_silver = os.path.join(TEMP_DIR, 'holidays.parquet')
+            df_hol.to_parquet(path_hol_silver, index=False)
+            upload_file("silver", "holidays.parquet", path_hol_silver)
+        except: pass
 
-    # 5. AGGREGATION 
-    print("🏆 [GOLD] Aggregating & Strategy Planning...")
-    
+    # 5. AGGREGATION (GOLD)
+    print("🏆 [GOLD] Aggregating...")
     if not df_loc.empty:
         df_gold_loc = df_loc.groupby(['kategori', 'nama_tempat', 'lat', 'lon']).size().reset_index(name='score').sort_values('score', ascending=False).head(300)
-        df_gold_loc.to_parquet(os.path.join(LAKE_GOLD, 'gold_locations.parquet'), index=False)
+        path_gold_loc = os.path.join(TEMP_DIR, 'gold_locations.parquet')
+        df_gold_loc.to_parquet(path_gold_loc, index=False)
+        upload_file("gold", "gold_locations.parquet", path_gold_loc)
     else:
         df_gold_loc = pd.DataFrame(columns=['kategori', 'nama_tempat', 'lat', 'lon', 'score'])
 
     if not df_silver.empty:
         df_feat = (df_silver.groupby('archetype').size().reset_index(name='jumlah').sort_values('jumlah', ascending=False))
+        path_gold_feat = os.path.join(TEMP_DIR, 'gold_features.parquet')
+        df_feat.to_parquet(path_gold_feat, index=False)
+        upload_file("gold", "gold_features.parquet", path_gold_feat)
     else:
         df_feat = pd.DataFrame(columns=['archetype', 'jumlah'])
-    
-    df_feat.to_parquet(os.path.join(LAKE_GOLD, 'gold_features.parquet'), index=False)
 
+    # Determine Missing Archs
     all_archs = ['Active', 'Creative', 'Healing', 'Intellectual', 'Religius', 'Social Butterfly', 'Sporty', 'Techie']
     existing_archs = df_feat['archetype'].tolist() if not df_feat.empty else []
-    
-    missing_archs = [arch for arch in all_archs if arch not in existing_archs]
-    
-    print(f"   -> Personalized Strategy untuk: {existing_archs}")
-    print(f"   -> Global Top Strategy untuk: {missing_archs}")
+    missing_archs = [a for a in all_archs if a not in existing_archs]
 
-    # 6. SERVING (DUCKDB)
-    print(f"💾 [SQL] Building Data Warehouse...")
-    con = duckdb.connect(DB_PATH)
-    con.execute("CREATE OR REPLACE TABLE gold_features AS SELECT * FROM df_feat")
-    con.execute("CREATE OR REPLACE TABLE gold_locations AS SELECT * FROM df_gold_loc")
-    con.execute(f"CREATE OR REPLACE TABLE gold_rules AS SELECT * FROM '{os.path.join(LAKE_SILVER, 'rules_data.parquet')}'")
-    con.execute(f"CREATE OR REPLACE TABLE gold_holidays AS SELECT * FROM '{os.path.join(LAKE_SILVER, 'holidays.parquet')}'")
+    # 6. SERVING (DUCKDB IN-MEMORY -> PARQUET)
+    # DISINI KITA GUNAKAN LOGIKA HYBRID STRATEGY ASLI KAMU
+    print(f"💾 [SQL] Building Data Lakehouse Table (In-Memory)...")
+    
+    # Gunakan In-Memory DuckDB (Stateless)
+    con = duckdb.connect(":memory:")
+    
+    # Load Tables from Memory/Temp Files
+    con.execute("CREATE TABLE gold_features AS SELECT * FROM df_feat")
+    con.execute("CREATE TABLE gold_locations AS SELECT * FROM df_gold_loc")
+    
+    if os.path.exists(os.path.join(TEMP_DIR, 'rules_data.parquet')):
+        con.execute(f"CREATE TABLE gold_rules AS SELECT * FROM '{os.path.join(TEMP_DIR, 'rules_data.parquet')}'")
+    
+    # Register Weather Table (Penting untuk SQL Logic kamu)
+    con.execute(f"CREATE TABLE context_weather AS SELECT * FROM '{os.path.join(TEMP_DIR, 'context_weather.parquet')}'")
+    
+    if os.path.exists(os.path.join(TEMP_DIR, 'holidays.parquet')):
+        con.execute(f"CREATE TABLE gold_holidays AS SELECT * FROM '{os.path.join(TEMP_DIR, 'holidays.parquet')}'")
+    else:
+        con.execute("CREATE TABLE gold_holidays (date DATE, name VARCHAR)")
 
-    # Filter Waktu
+    # Filter Waktu (Logic ASLI)
     allowed_cats = get_allowed_categories_by_time(con)
     time_filter_sql = ""
     if allowed_cats:
         allowed_sql_str = ", ".join([f"'{x}'" for x in allowed_cats])
         time_filter_sql = f"AND t2.kategori IN ({allowed_sql_str})"
     else:
-        time_filter_sql = "AND 1=0"
+        time_filter_sql = "AND 1=0" # Tutup semua
 
-    # Context Cuaca
-    cuaca_main = "Clear"
+    # Context Cuaca (Logic ASLI)
+    cuaca_main = w_data['main'] # Ambil dari variabel Python langsung
     indoor_cats = "'mall', 'cafe', 'library', 'museum', 'book_store', 'restaurant', 'fast_food', 'food_court', 'shop', 'electronics', 'clothes', 'gym', 'mosque', 'place_of_worship'"
-    try:
-        res = con.execute("SELECT main FROM context_weather LIMIT 1").fetchone()
-        if res: cuaca_main = res[0]
-    except: pass
 
     missing_sql_list = ", ".join([f"'{x}'" for x in missing_archs])
     
+    # --- QUERY SAKTI KAMU (TIDAK ADA YANG DIRUBAH LOGIKANYA) ---
     query = f"""
-        CREATE OR REPLACE TABLE gold_daily_recommendations AS
+        CREATE TABLE final_recs AS
         WITH Combined AS (
-            -- LOGIC A: PERSONALIZED (Untuk yang punya data survey)
+            -- LOGIC A: PERSONALIZED
             SELECT 
                 t1.archetype, 
                 t2.nama_tempat, t2.lat, t2.lon, t2.kategori, t2.score,
@@ -363,23 +322,21 @@ def run_elt_pipeline():
 
             UNION ALL
 
-            -- LOGIC B: FALLBACK / COLD START (Untuk yang datanya kosong)
-            -- Kita ambil Top 10 Lokasi apapun kategorinya, lalu kita tempelkan label archetype yang hilang
+            -- LOGIC B: FALLBACK
             SELECT 
                 m.arch_name as archetype,
                 t2.nama_tempat, t2.lat, t2.lon, t2.kategori, t2.score,
                 'Global Top (Fallback)' as metode
-            FROM (SELECT unnest([{missing_sql_list}]) as arch_name) m -- List missing archs
+            FROM (SELECT unnest([{missing_sql_list}]) as arch_name) m
             CROSS JOIN (
                 SELECT * FROM gold_locations 
                 ORDER BY score DESC 
-                LIMIT 20 -- Ambil top 20 global sebagai kandidat
+                LIMIT 20 
             ) t2
-            WHERE 1=1 -- Disini kita TIDAK memfilter kategori (biar user tetap dapat rekomendasi tempat bagus)
+            WHERE 1=1
         ),
         Finalized AS (
             SELECT *,
-                -- LOGIKA STRATEGI & WARNA (Sama seperti sebelumnya)
                 CASE 
                     WHEN '{cuaca_main}' LIKE '%Rain%' AND kategori NOT IN ({indoor_cats}) 
                     THEN 'Strategi : Cuaca hujan. Bawa payung atau cari opsi indoor.'
@@ -393,34 +350,28 @@ def run_elt_pipeline():
 
                 ROW_NUMBER() OVER (PARTITION BY archetype ORDER BY score DESC, random()) as rank_urutan
             FROM Combined
-            -- Pastikan jika missing list kosong, query tidak error (sudah ditangani di Python flow tapi SQL butuh validasi)
             WHERE archetype IS NOT NULL
         )
         SELECT * FROM Finalized WHERE rank_urutan <= 10 AND archetype != 'IGNORE_ME'
     """
     
     if not df_gold_loc.empty:
-                
-        # HACK: 
+        # HACK untuk handle jika missing_archs kosong (agar query tidak error syntax)
         if not missing_archs:
              query = query.replace(f"unnest([{missing_sql_list}])", "unnest(['IGNORE_ME'])")
 
         con.execute(query)
-        count = con.execute("SELECT COUNT(*) FROM gold_daily_recommendations").fetchone()[0]
-        print(f"ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
+        
+        # FINAL STEP: EXPORT TO PARQUET & UPLOAD MINIO
+        path_final = os.path.join(TEMP_DIR, 'recommendations.parquet')
+        con.execute(f"COPY final_recs TO '{path_final}' (FORMAT PARQUET)")
+        
+        upload_file("gold", "recommendations.parquet", path_final)
+        
+        count = con.execute("SELECT COUNT(*) FROM final_recs").fetchone()[0]
+        print(f"✅ ELT SUCCESS! {count} rekomendasi tersimpan di MinIO (Lakehouse Format).")
     else:
-        print("Data Lokasi Kosong. Pipeline finish without result.")
-
-        # HACK 
-    if not df_gold_loc.empty:
-        if not missing_archs:
-             query = query.replace(f"unnest([{missing_sql_list}])", "unnest(['IGNORE_ME'])")
-
-        con.execute(query)
-        count = con.execute("SELECT COUNT(*) FROM gold_daily_recommendations").fetchone()[0]
-        print(f"ELT Selesai! {count} rekomendasi siap saji tersimpan (Hybrid Strategy).")
-    else:
-        print("Data Lokasi Kosong. Pipeline finish without result.")
+        print("❌ Data Lokasi Kosong. Pipeline finish without result.")
 
     con.close()
 
