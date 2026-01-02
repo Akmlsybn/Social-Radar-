@@ -10,7 +10,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Konfigurasi MinIO (Sesuai Docker Compose)
 MINIO_ENDPOINT = "minio:9000"
 MINIO_ACCESS_KEY = "minioadmin"
 MINIO_SECRET_KEY = "minioadmin"
@@ -32,18 +31,15 @@ def sync_data_from_lake():
             secret_key=MINIO_SECRET_KEY,
             secure=False
         )
-        # Cek apakah bucket ada
         if not client.bucket_exists(BUCKET_NAME):
             return False, "Menunggu Pipeline..."
             
-        # Download File Parquet
         client.fget_object(BUCKET_NAME, "gold/recommendations.parquet", FILE_RECS)
         client.fget_object(BUCKET_NAME, "gold/context_weather.parquet", FILE_WEATHER)
         return True, "Data Terupdate"
     except Exception as e:
         return False, f"Menunggu Koneksi... ({str(e)})"
 
-# Sync data saat aplikasi dimuat ulang
 db_status, db_msg = sync_data_from_lake()
 
 # --- 2. STYLE UI (DIPERTAHANKAN 100% SESUAI PERMINTAAN) ---
@@ -165,29 +161,23 @@ def load_data_weather():
         return "Unknown", "Offline", 0
 
 # --- 4. LOGIKA DATA & STATE ---
-# Load Dataframe ke Memory
 df_recs = load_data_recs()
 cuaca_main, cuaca_desc, suhu = load_data_weather()
 
-# Ambil Opsi Archetype yang Tersedia di Data
 if not df_recs.empty:
     available_archs = sorted(df_recs['archetype'].unique().tolist())
-    # Hapus 'Global' dari dropdown pilihan user, biar 'Global' cuma jadi fallback
     if 'Global' in available_archs: available_archs.remove('Global')
-    # Filter opsional: hanya tampilkan yang ada di list default
     opsi_archetype = [a for a in ALL_POSSIBLE_ARCHETYPES if a in available_archs]
     if not opsi_archetype: opsi_archetype = ALL_POSSIBLE_ARCHETYPES
 else:
     opsi_archetype = sorted(ALL_POSSIBLE_ARCHETYPES)
 
-# Session State
 if 'selected_arch_state' not in st.session_state:
     st.session_state.selected_arch_state = "Sporty"
 
 def update_selection():
     st.session_state.selected_arch_state = st.session_state.arch_selector
 
-# Validasi pilihan
 if st.session_state.selected_arch_state not in opsi_archetype and opsi_archetype:
     st.session_state.selected_arch_state = opsi_archetype[0]
 
@@ -195,7 +185,6 @@ if st.session_state.selected_arch_state not in opsi_archetype and opsi_archetype
 with st.sidebar:
     st.header("Pusat Komando")
     
-    # Indikator Status Danau Data
     if db_status:
         st.success(f"🟢 Lakehouse Connected")
     else:
@@ -232,7 +221,6 @@ st.title("Temu Loka Dashboard")
 st.markdown("### Rekomendasi Tempat untuk Menemukan Pasangan di Kota Banjarmasin")
 st.divider()
 
-# Metric Cuaca
 c1, c2, c3 = st.columns(3)
 c1.metric("🌡️ Suhu Lokasi", f"{suhu}°C", cuaca_main)
 c2.metric("🌤️ Cuaca Saat Ini", cuaca_desc.title())
@@ -242,32 +230,26 @@ if "Rain" in cuaca_main:
 else:
     c3.metric("💈 Pilih Area", "OUTDOOR MODE", "Aman", delta_color="normal")
 
-# Menampilkan Data
 try:
     if df_recs.empty:
         st.warning("⚠️ Data Kosong. Pipeline ELT sedang bekerja, silakan tunggu sebentar dan refresh.")
     else:
-        # FILTERING DATA (PANDAS)
-        # 1. Coba ambil data sesuai Archetype pilihan
         result = df_recs[df_recs['archetype'] == selected_arch]
         
         is_fallback = False
-        # 2. Jika kosong, Fallback ke Global
+
         if result.empty:
             is_fallback = True
             result = df_recs[df_recs['archetype'] == 'Global']
 
-        # Ambil sampel acak (shuffle) max 5
         if not result.empty:
-            result = result.sample(frac=1).head(5) # Shuffle dan ambil 5
+            result = result.sample(frac=1).head(5) 
             
             hero = result.iloc[0]
 
-            # Jika Fallback, kasih notifikasi halus
             if is_fallback:
                 st.info(f"💡 Belum ada rekomendasi spesifik untuk **{selected_arch}**. Menampilkan **Rekomendasi Terpopuler** di Banjarmasin.")
 
-            # KARTU UTAMA (HERO)
             st.markdown(f"""
             <div class="rec-card" style="border-left: 6px solid {hero['warna_border']};">
                 <h3>💈 Pilihan Utama: {hero['nama_tempat']}</h3>
@@ -286,11 +268,9 @@ try:
             with c_btn:
                 st.write("") 
                 st.write("") 
-                # URL Format Sesuai Permintaan
                 gmaps_url = f"https://www.google.com/maps?q={hero['lat']},{hero['lon']}"            
                 st.link_button("Buka Maps", gmaps_url, use_container_width=True)
 
-            # LIST OPSI LAINNYA
             alternatives = result.iloc[1:]
             
             if not alternatives.empty:

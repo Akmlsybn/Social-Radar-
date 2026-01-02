@@ -35,7 +35,7 @@ def upload_file(folder, filename, file_path):
         print(f"   ☁️ [MINIO] Uploaded: {object_name}")
     except Exception as e: print(f"   ❌ Error Upload MinIO: {e}")
 
-# --- FUNGSI LOGIKA ASLI (TIDAK DIRUBAH) ---
+# --- FUNGSI LOGIKA 
 def clean_csv_quotes(file_path):
     """ Mencoba membaca file dengan berbagai encoding agar tidak crash. """
     try:
@@ -67,9 +67,7 @@ def get_allowed_categories_by_time(con):
     category_to_use = real_day 
     print(f"\n[TIME CHECK] Real Time: {real_day}, {current_date_str} @ {current_hour}:00 WITA")
 
-    # Cek Holiday (Override ke Minggu)
     try:
-        # Cek apakah tabel ada di DuckDB Memory
         tbl_exists = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'gold_holidays'").fetchone()[0]
         if tbl_exists > 0:
             res_holiday = con.execute(f"SELECT name FROM gold_holidays WHERE CAST(date AS VARCHAR) = '{current_date_str}'").fetchone()
@@ -83,15 +81,15 @@ def get_allowed_categories_by_time(con):
         query = f"""
             SELECT rekomendasi_prioritas FROM gold_rules 
             WHERE day_category = '{category_to_use}' 
-              AND {current_hour} >= CAST(start_hour AS INTEGER) 
-              AND {current_hour} < CAST(end_hour AS INTEGER) LIMIT 1
+            AND {current_hour} >= CAST(start_hour AS INTEGER) 
+            AND {current_hour} < CAST(end_hour AS INTEGER) LIMIT 1
         """
         result = con.execute(query).fetchone()
         if not result: return [] 
         raw_list = [x.strip().replace('"', '') for x in result[0].split(',')]
     except Exception as e: return []
 
-    # Dictionary Mapping (ASLI)
+    # Dictionary Mapping 
     dictionary_map = {
         "kampus": ["university", "school", "college"], "perpustakaan": ["library"], "toko buku": ["book_store"],
         "museum": ["museum", "arts_centre", "gallery"], "cafe": ["cafe", "coffee_shop", "restaurant", "fast_food", "food_court"],
@@ -117,7 +115,7 @@ def extract_lokasi_api():
         return response.json() if response.status_code == 200 else None
     except: return None
 
-# Fungsi Tambahan: Extract Cuaca (Agar pipeline mandiri)
+# Extract Cuaca 
 def extract_weather_data():
     data = {"main": "Clouds", "temp": 29.5, "description": "berawan (default)"}
     try:
@@ -130,13 +128,11 @@ def extract_weather_data():
     except: pass
     return data
 
-# --- MAIN PIPELINE (MODIFIKASI: OUTPUT KE MINIO PARQUET) ---
 def run_elt_pipeline():
     print("🚀 MEMULAI ELT PIPELINE (LAKEHOUSE MODE)")
 
     # 0. WEATHER (Bronze -> Silver -> MinIO)
     w_data = extract_weather_data()
-    # Simpan weather parquet untuk App
     pd.DataFrame([w_data]).to_parquet(os.path.join(TEMP_DIR, 'context_weather.parquet'), index=False)
     upload_file("gold", "context_weather.parquet", os.path.join(TEMP_DIR, 'context_weather.parquet'))
 
@@ -144,25 +140,20 @@ def run_elt_pipeline():
     print("[BRONZE] Extracting Data...")
     SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQn2iBR8DjQEgmZeA4ieEFLr1876iA5fi0F1p5hcNqYNuYEa9Qe6YlUoYRLPubzJ0D1jyD1P8on29jY/pub?output=csv" 
     
-    # Path Sementara
     p_survey = os.path.join(TEMP_DIR, 'hasil_survey.csv')
     p_rules = os.path.join(TEMP_DIR, 'social_time_rules.csv')
     p_loc = os.path.join(TEMP_DIR, 'lokasi_bjm.json')
 
-    # Download Survey
     try:
         with open(p_survey, 'wb') as f: f.write(requests.get(SHEET_URL).content)
         upload_file("bronze", "hasil_survey.csv", p_survey)
     except: 
-        # Fallback lokal jika internet mati
         if os.path.exists('hasil_survey.csv'): shutil.copy('hasil_survey.csv', p_survey)
 
-    # Copy Rules
     if os.path.exists('social_time_rules.csv'):
         shutil.copy('social_time_rules.csv', p_rules)
         upload_file("bronze", "social_time_rules.csv", p_rules)
 
-    # API Lokasi
     json_data = extract_lokasi_api()
     if json_data:
         with open(p_loc, 'w', encoding='utf-8') as f: json.dump(json_data, f)
@@ -237,7 +228,7 @@ def run_elt_pipeline():
             upload_file("silver", "holidays.parquet", path_hol_silver)
         except: pass
 
-    # 5. AGGREGATION (GOLD)
+    # GOLD
     print("🏆 [GOLD] Aggregating...")
     if not df_loc.empty:
         df_gold_loc = df_loc.groupby(['kategori', 'nama_tempat', 'lat', 'lon']).size().reset_index(name='score').sort_values('score', ascending=False).head(300)
@@ -255,26 +246,20 @@ def run_elt_pipeline():
     else:
         df_feat = pd.DataFrame(columns=['archetype', 'jumlah'])
 
-    # Determine Missing Archs
     all_archs = ['Active', 'Creative', 'Healing', 'Intellectual', 'Religius', 'Social Butterfly', 'Sporty', 'Techie']
     existing_archs = df_feat['archetype'].tolist() if not df_feat.empty else []
     missing_archs = [a for a in all_archs if a not in existing_archs]
 
-    # 6. SERVING (DUCKDB IN-MEMORY -> PARQUET)
-    # DISINI KITA GUNAKAN LOGIKA HYBRID STRATEGY ASLI KAMU
     print(f"💾 [SQL] Building Data Lakehouse Table (In-Memory)...")
     
-    # Gunakan In-Memory DuckDB (Stateless)
     con = duckdb.connect(":memory:")
     
-    # Load Tables from Memory/Temp Files
     con.execute("CREATE TABLE gold_features AS SELECT * FROM df_feat")
     con.execute("CREATE TABLE gold_locations AS SELECT * FROM df_gold_loc")
     
     if os.path.exists(os.path.join(TEMP_DIR, 'rules_data.parquet')):
         con.execute(f"CREATE TABLE gold_rules AS SELECT * FROM '{os.path.join(TEMP_DIR, 'rules_data.parquet')}'")
     
-    # Register Weather Table (Penting untuk SQL Logic kamu)
     con.execute(f"CREATE TABLE context_weather AS SELECT * FROM '{os.path.join(TEMP_DIR, 'context_weather.parquet')}'")
     
     if os.path.exists(os.path.join(TEMP_DIR, 'holidays.parquet')):
@@ -282,22 +267,19 @@ def run_elt_pipeline():
     else:
         con.execute("CREATE TABLE gold_holidays (date DATE, name VARCHAR)")
 
-    # Filter Waktu (Logic ASLI)
     allowed_cats = get_allowed_categories_by_time(con)
     time_filter_sql = ""
     if allowed_cats:
         allowed_sql_str = ", ".join([f"'{x}'" for x in allowed_cats])
         time_filter_sql = f"AND t2.kategori IN ({allowed_sql_str})"
     else:
-        time_filter_sql = "AND 1=0" # Tutup semua
+        time_filter_sql = "AND 1=0" 
 
-    # Context Cuaca (Logic ASLI)
-    cuaca_main = w_data['main'] # Ambil dari variabel Python langsung
+    cuaca_main = w_data['main'] 
     indoor_cats = "'mall', 'cafe', 'library', 'museum', 'book_store', 'restaurant', 'fast_food', 'food_court', 'shop', 'electronics', 'clothes', 'gym', 'mosque', 'place_of_worship'"
 
     missing_sql_list = ", ".join([f"'{x}'" for x in missing_archs])
     
-    # --- QUERY SAKTI KAMU (TIDAK ADA YANG DIRUBAH LOGIKANYA) ---
     query = f"""
         CREATE TABLE final_recs AS
         WITH Combined AS (
@@ -356,13 +338,12 @@ def run_elt_pipeline():
     """
     
     if not df_gold_loc.empty:
-        # HACK untuk handle jika missing_archs kosong (agar query tidak error syntax)
+        # HACK 
         if not missing_archs:
              query = query.replace(f"unnest([{missing_sql_list}])", "unnest(['IGNORE_ME'])")
 
         con.execute(query)
         
-        # FINAL STEP: EXPORT TO PARQUET & UPLOAD MINIO
         path_final = os.path.join(TEMP_DIR, 'recommendations.parquet')
         con.execute(f"COPY final_recs TO '{path_final}' (FORMAT PARQUET)")
         

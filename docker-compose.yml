@@ -1,7 +1,7 @@
 version: "3.8"
 
 services:
-  # 1. MINIO SERVER (Gudang Data / Object Storage)
+  # 1. MINIO SERVER
   minio:
     image: minio/minio:latest
     container_name: social_radar_minio
@@ -10,13 +10,13 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000" # Port API (dipakai kode Python)
-      - "9001:9001" # Port Web UI (buka di browser)
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
     restart: always
 
-  # 2. CREATE BUCKETS (Setup Otomatis)
+  # 2. CREATE BUCKETS
   createbuckets:
     image: minio/mc
     depends_on:
@@ -33,12 +33,11 @@ services:
     build: .
     container_name: social_radar_scheduler
     command: python scheduler.py
-    # Volume './datalake' DIHAPUS karena kita pakai MinIO
     environment:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
-      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY} # Pastikan ada di .env atau isi manual
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - PYTHONUNBUFFERED=1
     depends_on:
       - minio
@@ -50,7 +49,6 @@ services:
     build: .
     container_name: social_radar_app
     command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
-    # Volume './datalake' DIHAPUS karena kita download dari MinIO
     ports:
       - "8501:8501"
     environment:
@@ -62,6 +60,5 @@ services:
       - minio
     restart: always
 
-# Volume Persisten untuk MinIO (Biar data gak hilang pas restart)
 volumes:
   minio_data:
